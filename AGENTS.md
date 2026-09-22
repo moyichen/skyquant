@@ -19,6 +19,7 @@ SkyQuant 是一套 A 股日线量化策略回测流水线，支持全自动参�
 # 全量流水线（8 步：行情拉取→寻优→校验→聚合→写配置→回测→复盘）
 python run_all.py
 python run_all.py --skip-data          # 缓存加速模式
+python run_all.py --stock-list 000725,600519   # 仅运行指定股票（逗号分隔）
 
 # 每日信号生成（收盘后运行，输出买卖信号与次日操作建议）
 python daily_signal.py
@@ -26,7 +27,16 @@ python daily_signal.py --force_refresh  # 强制全量下载
 
 # 单次回测
 python main.py --strategy maatr_base
+python main.py --stock-list 000725 --strategy maatr_base  # 仅回测指定股票
 ```
+
+### `--stock-list` 参数说明
+
+`run_all.py`、`main.py`、`param_optimize.py`、`manual_trade_review.py`、`daily_signal.py` 均支持 `--stock-list` 参数，格式为逗号分隔的股票代码列表：
+
+- 不传时使用 config.yaml 中 `stock_list` 的全部标的
+- 传 `--stock-list 000725,600519` 时仅处理指定股票
+- `run_all.py` 会将该参数透传给主回测、参数寻优、手工复盘三步；流水线中间步骤（out_sample/rolling/aggregate/write_config）读取前一步 CSV 产出，天然被过滤，无需额外传参
 
 ## 文件清单
 
@@ -41,25 +51,26 @@ python main.py --strategy maatr_base
 | plot_utils.py | 可视化：净值回撤图、胜率饼图 |
 | manual_trade_review.py | 手工交易复盘：策略信号匹配、对比统计 |
 | strategy/base.py | 策略基类：ATR 仓位管理、止损、action_log 信号日志、统一输出接口 |
-| strategy/__init__.py | STRATEGY_MAPPING 策略注册表 |
+| strategy/__init__.py | STRATEGY_MAPPING 策略注册表、DEFAULT_STRATEGY_PARAMS 默认参数 |
 | strategy/maatr_base.py | 均线+ATR 策略：短均线金叉长均线买入 |
 | strategy/momentum.py | 动量策略：动量为正买入 |
 | strategy/short_reversal.py | 短期反转策略：跌幅超阈值买入 |
 | strategy/boll_ma.py | 布林带+均线策略：回踩下轨买入 |
 | strategy/multi_factor.py | 多因子策略 |
 | opt_pipeline/common.py | 流水线共享：BacktestRunner、路径常量、参数提取工具 |
-| opt_pipeline/param_optimize.py | 网格参数寻优 |
+| opt_pipeline/param_optimize.py | 网格参数寻优（optstrategy 多进程） |
 | opt_pipeline/out_sample_verify.py | 外样本校验（剔除过拟合） |
 | opt_pipeline/rolling_window_verify.py | 滚动窗口稳定性校验 |
 | opt_pipeline/aggregate_best_param.py | 最优参数聚合 |
 | opt_pipeline/write_param_to_config.py | 参数写入 config.yaml |
+| ruff.toml | Ruff 配置（target-version=py39, line-length=260） |
 
 ## 开发约定
 
 - **Python 版本兼容**：项目需兼容 Python 3.10 以下旧版本，类型注解使用 Optional[X] 而非 X | None
 - **代码语言**：代码注释、日志、print 输出统一使用英文
 - **Spec 文档语言**：需求文档（spec.md）统一使用中文
-- **格式化**：Ruff，行宽 88，VS Code 配置 formatOnSave
+- **格式化**：Ruff，行宽 260，配置在 `ruff.toml`（`target-version = "py39"` 防止 `Optional[X]` 被自动转为 `X | None`），VS Code 配置 formatOnSave
 - **变量命名**：不使用缩写（如用 strategy 而非 strat）
 - **文件创建**：不主动创建 README 或文档文件，除非用户明确要求
 - **路径锚定**：使用 Path(__file__).parent.resolve() 锚定项目根目录，不依赖 CWD
@@ -76,10 +87,13 @@ python main.py --strategy maatr_base
 
 5. **opt_pipeline 路径引导**：opt_pipeline/common.py 统一处理 sys.path 注入项目根目录，各阶段脚本只需 from common import ...。
 
+6. **optstrategy 多进程寻优**：参数寻优使用 `cerebro.optstrategy()` + `cerebro.run(maxcpu=N)` 实现多进程并行。由于 optstrategy 返回 `OptReturn` 对象（非策略实例），通过自定义 `FinalValueAnalyzer` 捕获最终资产值。`stop()` 方法将 `final_value` 存入策略属性（仅单回测模式下直接访问，optstrategy 模式走 analyzer）。
+
 ## 配置文件
 
 - config.yaml：全局配置（资金、时间区间、费率、标的池、策略参数）
 - manual_trades.csv：手工交易记录（trade_date, stock_code, side, price, size）
+- ruff.toml：Ruff 格式化配置（target-version=py39, line-length=260）
 - ~/.skyquant/tushare.yaml：Tushare API token
 
 ## Spec 文档
@@ -111,6 +125,7 @@ def _close_position(self)                         # 卖出 + 重置止损 + 记�
 def next(self)                                    # 模板方法: 无仓位->_on_entry(), 有仓位->_on_exit()
 def _on_entry(self)                               # 子类重写: 入场条件
 def _on_exit(self)                                # 子类重写: 出场条件
+def stop(self)                                    # 回测结束: self.final_value = broker.getvalue()（供 optimize 模式）
 def get_equity_dataframe() -> pd.DataFrame        # 每日净值
 def get_trade_dataframe() -> pd.DataFrame         # 已平仓交易记录
 def get_action_dataframe() -> pd.DataFrame        # 决策时信号日志（含未平仓）
@@ -141,7 +156,17 @@ STRATEGY_MAPPING = {
     "boll_ma": BollMAStrategy,
     "multi_factor": MultiFactorStrategy,
 }
+
+DEFAULT_STRATEGY_PARAMS = {
+    "maatr_base": {"atr_multiple": 1.8, "max_risk_ratio": 0.02},
+    "momentum": {"atr_multiple": 1.5, "momentum_period": 20, "max_risk_ratio": 0.02},
+    "short_reversal": {"atr_mult": 2.0, "fall_ratio": 0.18, "max_risk_ratio": 0.02},
+    "boll_ma": {"atr_mult": 1.6, "boll_period": 20, "max_risk_ratio": 0.02},
+    "multi_factor": {"atr_mult": 1.7, "max_risk_ratio": 0.02},
+}
 ```
+
+`DEFAULT_STRATEGY_PARAMS` 为各策略的默认参数，当 config.yaml 的 `strategy_params` 中没有某只股票的优化参数时，`daily_signal.py` 和 `manual_trade_review.py` 会回退使用这些默认参数。
 
 ### data_source.py
 
@@ -190,9 +215,13 @@ def run_strategy_actions(ds, comminfo, cfg, code, strategy_id, param) -> Optiona
 def classify_signal(action_df, last_bar_date) -> dict            # 最后action日期==last_bar_date->该action; 否则持仓->HOLD/空仓->WAIT
 def compute_consensus(actions: List[str]) -> str                # SELL > BUY > HOLD > WAIT
 def derive_suggested_action(consensus: str, currently_held: bool) -> str  # 持仓+SELL->卖出, 持仓+BUY->加仓, 未持仓+BUY->买入
-def build_report_rows(ds, comminfo, cfg, param_pool, stock_name_map, holdings, report_date) -> List[dict]
+def build_report_rows(ds, comminfo, cfg, param_pool, stock_name_map, holdings, report_date, stock_list) -> List[dict]
 def print_console_summary(df, holdings, report_date)            # 三段式: 持仓操作/关注列表/统计汇总
 ```
+
+**命令行参数**：`--force_refresh`（强制全量下载）、`--stock-list`（逗号分隔股票代码，过滤 stock_list）
+
+**默认参数回退**：当某只股票在 config.yaml 的 `strategy_params` 中没有优化后的参数时，使用 `strategy/__init__.py` 中的 `DEFAULT_STRATEGY_PARAMS` 作为回退，确保所有股票都能生成信号。
 
 ### main.py
 
@@ -201,6 +230,8 @@ def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strateg
 def get_strategy_param(param_pool, code, strategy_id) -> (strategy_cls, params)
 def validate_manual_trades(valid_codes)
 ```
+
+**命令行参数**：`--force_refresh`（强制全量下载）、`--strategy`（策略 id，默认 maatr_base）、`--stock-list`（逗号分隔股票代码，过滤 stock_list）
 
 **Cerebro 配置模式**（main.py / daily_signal.py / manual_trade_review.py 共用）：
 
@@ -219,30 +250,72 @@ strategy_instance = cerebro.run()[0]
 def run_step(name, cwd, cmd)    # subprocess.Popen 执行, 非零退出码->sys.exit(1)
 ```
 
+**命令行参数**：
+- `--skip-data`：跳过行情拉取，使用本地缓存
+- `--stock-list 000725,600519`：仅运行指定股票，透传给 main.py / param_optimize.py / manual_trade_review.py
+
 8 步：行情拉取 -> param_optimize.py -> out_sample_verify.py -> rolling_window_verify.py -> aggregate_best_param.py -> write_param_to_config.py -> main.py -> manual_trade_review.py
+
+**--stock-list 透传机制**：run_all.py 将 `--stock-list` 透传给第 1、2、7、8 步；第 3-6 步读取前一步 CSV 产出，天然被过滤。
 
 ### opt_pipeline/common.py
 
 ```python
+class FinalValueAnalyzer(bt.Analyzer):
+    def stop(self): self.final_value = self.strategy.broker.getvalue()
+    def get_analysis(self): return self.final_value
+
 class BacktestRunner:
     def __init__(self, data_source=None)
-    def run(self, df, strategy_id, params) -> float    # 返回最终资产值
+    def run(self, df, strategy_id, params) -> float                              # 单回测，返回最终资产值
     def profit_rate(self, final_value) -> float
+    def optimize(df, strategy_id, param_grid, maxcpu=1) -> List[Tuple[dict, float]]  # optstrategy 多进程寻优
+        # cerebro.optstrategy(strategy_cls, **param_grid) + cerebro.run(maxcpu=N)
+        # 返回 [(param_dict, final_value), ...]，用 FinalValueAnalyzer 取值
+```
 
+**optimize 内部流程**：`cerebro.optstrategy(cls, **grid)` → `cerebro.run(maxcpu=N)` 返回 `List[List[OptReturn]]` → 用 `strat.analyzers.final_value.get_analysis()` 取最终资产值 → 按 `itertools.product(*grid.values())` 顺序配对参数。
+
+```python
 def extract_params(row, exclude_cols) -> dict    # 从CSV行提取策略参数, period类型强制int
 def to_native(params: dict) -> dict              # numpy标量转Python原生类型
 def read_stage_csv(path) -> pd.DataFrame          # stock_code强制str
 ```
 
+### opt_pipeline/param_optimize.py — optstrategy 多进程寻优
+
+```python
+PARAM_GRID = {strategy_id: {param_name: [values, ...]}}   # 网格定义
+
+def main():
+    parser.add_argument("--maxcpu", type=int, default=1)  # 0/-1 自动检测 CPU 数
+    parser.add_argument("--stock-list", type=str, default=None)  # 逗号分隔股票代码
+    # 遍历 stock_list(可过滤) -> 遍历 PARAM_GRID -> runner.optimize(df, strategy_id, grid, maxcpu)
+    # 过滤 profit_rate > 0 -> 写入 output/param_optimize_result.csv
+```
+
+**运行方式**：
+```bash
+python opt_pipeline/param_optimize.py --maxcpu 1                          # 单进程（调试用）
+python opt_pipeline/param_optimize.py --maxcpu 4                          # 4 进程并行
+python opt_pipeline/param_optimize.py --maxcpu 0                          # 自动检测 CPU 数
+python opt_pipeline/param_optimize.py --maxcpu 4 --stock-list 000725,600519  # 仅寻优指定股票
+```
+
+**输出 CSV 列**：`stock_code, strategy, {各策略参数}, final_capital, profit, profit_rate`
+
 ### manual_trade_review.py
 
 ```python
 class ManualTradeReview:
-    def __init__(self, config_path="config.yaml", trade_csv="manual_trades.csv")
+    def __init__(self, config_path="config.yaml", trade_csv="manual_trades.csv", stock_list=None)
+        # stock_list: 逗号分隔股票代码，过滤 manual_trades.csv
     def get_strategy_signal(self, code, strategy_id, param) -> Optional[pd.DataFrame]  # 从trade_log提取信号
     def match_manual_trade(self) -> pd.DataFrame       # 按交易日匹配策略信号
     def summary_report(self, out_csv="output/manual_review_result.csv") -> pd.DataFrame  # 匹配率/胜率/盈亏
 ```
+
+**命令行参数**：`--stock-list`（逗号分隔股票代码，过滤 manual_trades.csv 中对应记录）
 
 ### 新会话推荐工作流
 

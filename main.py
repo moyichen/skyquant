@@ -48,14 +48,10 @@ def prepare_output_dirs():
 
 def validate_manual_trades(valid_codes):
     """Check stock codes in manual_trades.csv against the configured stock pool."""
-    df_trades = pd.read_csv(
-        TRADE_CSV, dtype={"stock_code": str}, parse_dates=["trade_date"]
-    )
+    df_trades = pd.read_csv(TRADE_CSV, dtype={"stock_code": str}, parse_dates=["trade_date"])
     invalid = [c for c in df_trades["stock_code"].unique() if c not in valid_codes]
     if invalid:
-        raise ValueError(
-            f"manual_trades.csv contains codes missing from stock pool: {invalid}"
-        )
+        raise ValueError(f"manual_trades.csv contains codes missing from stock pool: {invalid}")
 
 
 def get_strategy_param(param_pool, code, strategy_id):
@@ -64,9 +60,7 @@ def get_strategy_param(param_pool, code, strategy_id):
     return strategy_cls, params
 
 
-def run_backtest(
-    dataSource, comminfo, global_setting, param_pool, code, strategy_id, force_refresh
-):
+def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strategy_id, force_refresh):
     """Run one backtest for a single stock/strategy; return metrics dict or None."""
     df_data = dataSource.fetch_stock(code, force_refresh)
     if df_data is None:
@@ -106,9 +100,7 @@ def run_backtest(
 
     plot_all(equity_df, trades_df, metrics, PLOT_OUT, code, strategy_id)
 
-    logger.info(
-        f"{code} {strategy_id} final portfolio value: {cerebro.broker.getvalue():.2f}"
-    )
+    logger.info(f"{code} {strategy_id} final portfolio value: {cerebro.broker.getvalue():.2f}")
     logger.info(f"Metrics: {metrics}")
     return metrics
 
@@ -120,8 +112,12 @@ def main():
         action="store_true",
         help="Force full re-download of market data, overwriting cache",
     )
+    parser.add_argument("--strategy", default=DEFAULT_STRATEGY, help="Strategy id to backtest")
     parser.add_argument(
-        "--strategy", default=DEFAULT_STRATEGY, help="Strategy id to backtest"
+        "--stock-list",
+        type=str,
+        default=None,
+        help="Comma-separated stock codes to run. Defaults to all stocks in config.yaml.",
     )
     args = parser.parse_args()
 
@@ -133,6 +129,9 @@ def main():
     cfg = ds.cfg
     global_setting = cfg["global_setting"]
     stock_list = cfg["stock_list"]
+    if args.stock_list:
+        wanted = {c.strip() for c in args.stock_list.split(",") if c.strip()}
+        stock_list = [s for s in stock_list if s["code"] in wanted]
     valid_codes = [item["code"] for item in stock_list]
     # Normalize keys to str (unquoted numeric codes in yaml are parsed as int)
     param_pool = {str(code): p for code, p in cfg["strategy_params"].items()}

@@ -9,14 +9,13 @@ import datetime
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import backtrader as bt
 import pandas as pd
 
 from comm import AStockCommission
 from data_source import AStockData, DataSource
-from strategy import STRATEGY_MAPPING
+from strategy import DEFAULT_STRATEGY_PARAMS, STRATEGY_MAPPING
 
 BASE_DIR = Path(__file__).parent.resolve()
 OUTPUT_DIR = BASE_DIR / "output"
@@ -35,7 +34,7 @@ def setup_logging():
     )
 
 
-def compute_holdings(trade_csv: Path) -> Dict[str, dict]:
+def compute_holdings(trade_csv: Path) -> dict[str, dict]:
     """Parse manual_trades.csv and return current holdings.
 
     Returns {stock_code: {"size": int, "avg_cost": float}} for stocks with net positive size.
@@ -45,7 +44,7 @@ def compute_holdings(trade_csv: Path) -> Dict[str, dict]:
     df = pd.read_csv(trade_csv, dtype={"stock_code": str}, parse_dates=["trade_date"])
     if df.empty:
         return {}
-    holdings: Dict[str, dict] = {}
+    holdings: dict[str, dict] = {}
     for _, row in df.sort_values("trade_date").iterrows():
         code = str(row["stock_code"])
         side = str(row["side"]).upper()
@@ -55,9 +54,7 @@ def compute_holdings(trade_csv: Path) -> Dict[str, dict]:
             if code in holdings:
                 old = holdings[code]
                 total_size = old["size"] + size
-                old["avg_cost"] = (
-                    old["avg_cost"] * old["size"] + price * size
-                ) / total_size
+                old["avg_cost"] = (old["avg_cost"] * old["size"] + price * size) / total_size
                 old["size"] = total_size
             else:
                 holdings[code] = {"size": size, "avg_cost": price}
@@ -76,7 +73,7 @@ def run_strategy_actions(
     code: str,
     strategy_id: str,
     param: dict,
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     """Run a single strategy on a single symbol and return the action log DataFrame."""
     df = ds.load_cached_data(code)
     if df is None or len(df) == 0:
@@ -129,7 +126,7 @@ def classify_signal(action_df: pd.DataFrame, last_bar_date) -> dict:
     }
 
 
-def compute_consensus(actions: List[str]) -> str:
+def compute_consensus(actions: list[str]) -> str:
     """Aggregate per-strategy actions: SELL > BUY > HOLD > WAIT."""
     if not actions:
         return "WAIT"
@@ -158,35 +155,27 @@ def build_report_rows(
     cfg: dict,
     param_pool: dict,
     stock_name_map: dict,
-    holdings: Dict[str, dict],
+    holdings: dict[str, dict],
     report_date: str,
-) -> List[dict]:
+    stock_list: list,
+) -> list[dict]:
     """Run strategies for all stocks and collect report rows."""
-    rows: List[dict] = []
-    for stock_info in cfg["stock_list"]:
+    rows: list[dict] = []
+    for stock_info in stock_list:
         code = str(stock_info["code"])
         name = stock_info.get("name", code)
-        if code not in param_pool:
-            logger.warning(f"No strategy config for {code} ({name}), skipping")
-            continue
         # Fetch latest data
         df = ds.fetch_stock(code, force_refresh=False)
         if df is None or len(df) == 0:
             logger.warning(f"No data for {code} ({name}), skipping")
             continue
-        last_bar_date = (
-            df.iloc[-1]["datetime"].date()
-            if "datetime" in df.columns
-            else df.index[-1].date()
-        )
+        last_bar_date = df.iloc[-1]["datetime"].date() if "datetime" in df.columns else df.index[-1].date()
         held = code in holdings
         holding_info = holdings.get(code, {"size": 0, "avg_cost": 0.0})
-        strategy_actions: List[str] = []
+        strategy_actions: list[str] = []
         for strategy_id, param in param_pool[code].items():
             try:
-                action_df = run_strategy_actions(
-                    ds, comminfo, cfg, code, strategy_id, param
-                )
+                action_df = run_strategy_actions(ds, comminfo, cfg, code, strategy_id, param)
             except Exception as e:
                 logger.error(f"Strategy {strategy_id} failed for {code}: {e}")
                 action_df = None
@@ -236,9 +225,7 @@ def build_report_rows(
     return rows
 
 
-def print_console_summary(
-    df: pd.DataFrame, holdings: Dict[str, dict], report_date: str
-):
+def print_console_summary(df: pd.DataFrame, holdings: dict[str, dict], report_date: str):
     """Print a three-section console summary."""
     consensus_rows = df[df["strategy_id"] == "CONSENSUS"].copy()
     print(f"\n{'=' * 60}")
@@ -252,29 +239,20 @@ def print_console_summary(
         print("  (no holdings)")
     else:
         for _, r in held_rows.iterrows():
-            print(
-                f"  {r['stock_code']} {r['stock_name']}: "
-                f"{r['suggested_action']} (consensus={r['consensus']}, "
-                f"size={r['holding_size']}, avg_cost={r['avg_cost']})"
-            )
+            print(f"  {r['stock_code']} {r['stock_name']}: {r['suggested_action']} (consensus={r['consensus']}, size={r['holding_size']}, avg_cost={r['avg_cost']})")
 
     # Section 2: Watchlist (BUY consensus, not held)
-    watchlist = consensus_rows[
-        (consensus_rows["suggested_action"] == "BUY")
-        & (consensus_rows["currently_held"] == False)
-    ]
+    watchlist = consensus_rows[(consensus_rows["suggested_action"] == "BUY") & (consensus_rows["currently_held"] == False)]
     print(f"\n--- Watchlist - Potential New Entries ({len(watchlist)}) ---")
     if watchlist.empty:
         print("  (none)")
     else:
         for _, r in watchlist.iterrows():
-            print(
-                f"  {r['stock_code']} {r['stock_name']}: BUY (consensus={r['consensus']})"
-            )
+            print(f"  {r['stock_code']} {r['stock_name']}: BUY (consensus={r['consensus']})")
 
     # Section 3: Summary counts
     counts = consensus_rows["consensus"].value_counts()
-    print(f"\n--- Summary ---")
+    print("\n--- Summary ---")
     print(f"  Total stocks scanned: {len(consensus_rows)}")
     for action in ["SELL", "BUY", "HOLD", "WAIT"]:
         print(f"  {action}: {counts.get(action, 0)}")
@@ -289,6 +267,12 @@ def main():
         action="store_true",
         help="Force full re-download of market data",
     )
+    parser.add_argument(
+        "--stock-list",
+        type=str,
+        default=None,
+        help="Comma-separated stock codes to run. Defaults to all stocks in config.yaml.",
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -299,6 +283,12 @@ def main():
     ds.end_date = datetime.date.today().strftime("%Y%m%d")
     cfg = ds.cfg
 
+    # Filter stock list if --stock-list is provided
+    stock_list = cfg["stock_list"]
+    if args.stock_list:
+        wanted = {c.strip() for c in args.stock_list.split(",") if c.strip()}
+        stock_list = [s for s in stock_list if str(s["code"]) in wanted]
+
     comm_cfg = cfg["commission_config"]
     comminfo = AStockCommission(
         commission=comm_cfg["commission"],
@@ -306,20 +296,20 @@ def main():
         transfer_fee=comm_cfg["transfer_fee"],
     )
 
-    # Normalize keys to str (unquoted numeric codes in yaml are parsed as int)
-    param_pool = {str(code): p for code, p in cfg["strategy_params"].items()}
-    stock_name_map = {
-        str(s["code"]): s.get("name", s["code"]) for s in cfg["stock_list"]
-    }
+    # Build param pool: use optimized params when available, otherwise fall back to defaults
+    optimized_params = {str(code): p for code, p in cfg["strategy_params"].items()}
+    param_pool = {}
+    for s in stock_list:
+        code = str(s["code"])
+        param_pool[code] = optimized_params.get(code, DEFAULT_STRATEGY_PARAMS)
+    stock_name_map = {str(s["code"]): s.get("name", s["code"]) for s in stock_list}
 
     holdings = compute_holdings(TRADE_CSV)
     logger.info(f"Holdings: {holdings}")
 
     report_date = datetime.date.today().strftime("%Y%m%d")
 
-    rows = build_report_rows(
-        ds, comminfo, cfg, param_pool, stock_name_map, holdings, report_date
-    )
+    rows = build_report_rows(ds, comminfo, cfg, param_pool, stock_name_map, holdings, report_date, stock_list)
 
     if not rows:
         logger.warning("No signal rows generated")

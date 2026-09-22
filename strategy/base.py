@@ -136,6 +136,10 @@ class BaseStrategy(bt.Strategy):
         """Subclass override: decide whether to close when in position; call self._close_position() on signal"""
         raise NotImplementedError
 
+    def stop(self):
+        """Store final portfolio value for optimization mode."""
+        self.final_value = self.broker.getvalue()
+
     # ===================== Unified output interface =====================
     def get_equity_dataframe(self):
         return pd.DataFrame(self.equity_log)
