@@ -1,5 +1,6 @@
 import datetime
 import os
+from typing import Optional
 
 import backtrader as bt
 import pandas as pd
