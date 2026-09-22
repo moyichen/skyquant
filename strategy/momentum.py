@@ -11,7 +11,9 @@ class MomentumStrategy(BaseStrategy):
     )
 
     def _init_indicators(self):
-        self.mom = bt.indicators.Momentum(self.data.close, period=self.p.momentum_period)
+        self.mom = bt.indicators.Momentum(
+            self.data.close, period=self.p.momentum_period
+        )
 
     def _on_entry(self):
         # 动量为正开多

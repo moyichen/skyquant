@@ -10,5 +10,5 @@ STRATEGY_MAPPING = {
     "momentum": MomentumStrategy,
     "short_reversal": ShortReversalStrategy,
     "boll_ma": BollMAStrategy,
-    "multi_factor": MultiFactorStrategy
+    "multi_factor": MultiFactorStrategy,
 }

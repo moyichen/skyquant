@@ -1,7 +1,7 @@
 # opt_pipeline 各阶段共享的基础设施：
 # 路径引导、标准回测执行器、CSV行参数提取、阶段文件路径
-import sys
 import os
+import sys
 from typing import Optional
 
 # 以脚本方式运行（python3 param_optimize.py）时，sys.path[0] 是本目录，
@@ -10,13 +10,12 @@ PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__f
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-import pandas as pd
 import backtrader as bt
+import pandas as pd
 
 from comm import AStockCommission
-from data_source import DataSource, AStockData
+from data_source import AStockData, DataSource
 from strategy import STRATEGY_MAPPING
-
 
 # ===================== 流水线阶段文件路径（绝对路径，不依赖 cwd） =====================
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
@@ -41,10 +40,10 @@ class BacktestRunner:
             transfer_fee=comm_cfg["transfer_fee"],
         )
 
-    def run(self, df: pd.DataFrame, strat_id: str, params: dict) -> float:
+    def run(self, df: pd.DataFrame, strategy_id: str, params: dict) -> float:
         """在给定行情片段上运行单策略，返回期末资产"""
         cerebro = bt.Cerebro()
-        cerebro.addstrategy(STRATEGY_MAPPING[strat_id], **params)
+        cerebro.addstrategy(STRATEGY_MAPPING[strategy_id], **params)
         cerebro.adddata(AStockData(dataname=df, datetime="datetime"))
         cerebro.broker.setcash(self.initial_capital)
         cerebro.broker.addcommissioninfo(self.comminfo)

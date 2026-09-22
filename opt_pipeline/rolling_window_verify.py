@@ -1,11 +1,22 @@
 # 滚动窗口稳定性校验：多组 4年训练/1年测试 窗口滚动验证参数稳定性
 import pandas as pd
 
-from common import (BacktestRunner, extract_params, read_stage_csv,
-                    OUT_SAMPLE_CSV, ROLLING_CSV)
+from common import (
+    BacktestRunner,
+    extract_params,
+    read_stage_csv,
+    OUT_SAMPLE_CSV,
+    ROLLING_CSV,
+)
 
 # 外样本结果 CSV 中非策略参数的列
-NON_PARAM_COLS = ["stock_code", "strategy", "train_profit_rate", "test_profit_rate", "overfit"]
+NON_PARAM_COLS = [
+    "stock_code",
+    "strategy",
+    "train_profit_rate",
+    "test_profit_rate",
+    "overfit",
+]
 
 
 def rolling_slice(df, start_year=2020, train_len=4, test_len=1):
@@ -16,8 +27,12 @@ def rolling_slice(df, start_year=2020, train_len=4, test_len=1):
         train_e = f"{start_year + offset + train_len}-12-31"
         test_s = f"{start_year + offset + train_len + 1}-01-01"
         test_e = f"{start_year + offset + train_len + test_len}-12-31"
-        df_train = df[(df["datetime"] >= train_s) & (df["datetime"] <= train_e)].reset_index(drop=True)
-        df_test = df[(df["datetime"] >= test_s) & (df["datetime"] <= test_e)].reset_index(drop=True)
+        df_train = df[
+            (df["datetime"] >= train_s) & (df["datetime"] <= train_e)
+        ].reset_index(drop=True)
+        df_test = df[
+            (df["datetime"] >= test_s) & (df["datetime"] <= test_e)
+        ].reset_index(drop=True)
         if len(df_train) > 200 and len(df_test) > 100:
             windows.append((df_train, df_test))
     return windows
@@ -29,7 +44,7 @@ def main():
     result_list = []
     for _, row in df_input.iterrows():
         code = row["stock_code"]
-        strat_id = row["strategy"]
+        strategy_id = row["strategy"]
         param = extract_params(row, NON_PARAM_COLS)
 
         full_df = runner.ds.load_cached_data(code)
@@ -39,17 +54,22 @@ def main():
 
         test_rate_list = []
         for _train_df, test_df in rolling_slice(full_df):
-            test_rate = runner.profit_rate(runner.run(test_df, strat_id, param))
+            test_rate = runner.profit_rate(runner.run(test_df, strategy_id, param))
             test_rate_list.append(test_rate)
         if len(test_rate_list) == 0:
             continue
 
         avg_test = sum(test_rate_list) / len(test_rate_list)
         valid = 1 if avg_test > 0 else 0
-        result_list.append({
-            "stock_code": code, "strategy": strat_id, **param,
-            "avg_test_profit": round(avg_test, 4), "valid": valid
-        })
+        result_list.append(
+            {
+                "stock_code": code,
+                "strategy": strategy_id,
+                **param,
+                "avg_test_profit": round(avg_test, 4),
+                "valid": valid,
+            }
+        )
 
     res_df = pd.DataFrame(result_list)
     if not res_df.empty:

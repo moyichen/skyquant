@@ -1,8 +1,13 @@
 # 外样本校验：网格入选参数在训练集/测试集分别回测，剔除过拟合参数
 import pandas as pd
 
-from common import (BacktestRunner, extract_params, read_stage_csv,
-                    PARAM_GRID_CSV, OUT_SAMPLE_CSV)
+from common import (
+    BacktestRunner,
+    extract_params,
+    read_stage_csv,
+    PARAM_GRID_CSV,
+    OUT_SAMPLE_CSV,
+)
 
 TRAIN_END = "2024-12-31"
 # 网格结果 CSV 中非策略参数的列
@@ -23,7 +28,7 @@ def main():
     verify_result = []
     for _, row in grid_df.iterrows():
         code = row["stock_code"]
-        strat_id = row["strategy"]
+        strategy_id = row["strategy"]
         param = extract_params(row, NON_PARAM_COLS)
 
         cache_df = runner.ds.load_cached_data(code)
@@ -35,15 +40,19 @@ def main():
             print(f"标的 {code} 训练/测试集为空，跳过")
             continue
 
-        train_rate = runner.profit_rate(runner.run(df_train, strat_id, param))
-        test_rate = runner.profit_rate(runner.run(df_test, strat_id, param))
+        train_rate = runner.profit_rate(runner.run(df_train, strategy_id, param))
+        test_rate = runner.profit_rate(runner.run(df_test, strategy_id, param))
         overfit_flag = 1 if (train_rate - test_rate) > OVERFIT_THRESHOLD else 0
-        verify_result.append({
-            "stock_code": code, "strategy": strat_id, **param,
-            "train_profit_rate": round(train_rate, 4),
-            "test_profit_rate": round(test_rate, 4),
-            "overfit": overfit_flag
-        })
+        verify_result.append(
+            {
+                "stock_code": code,
+                "strategy": strategy_id,
+                **param,
+                "train_profit_rate": round(train_rate, 4),
+                "test_profit_rate": round(test_rate, 4),
+                "overfit": overfit_flag,
+            }
+        )
 
     verify_df = pd.DataFrame(verify_result)
     if not verify_df.empty:

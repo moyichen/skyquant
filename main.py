@@ -1,71 +1,83 @@
+"""SkyQuant backtest main engine.
+
+Loads config, iterates the stock pool, runs the selected strategy per stock,
+and writes equity curves, plots and the metrics summary under output/.
+"""
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+
 import backtrader as bt
 import pandas as pd
-import os
-import argparse
+
 from comm import AStockCommission
-from data_source import DataSource, AStockData
-from strategy import STRATEGY_MAPPING
+from data_source import AStockData, DataSource
 from metrics_utils import calc_metrics
 from plot_utils import plot_all
+from strategy import STRATEGY_MAPPING
 
-# ===================== 路径常量 =====================
-CACHE_DIR = "cache/stock_cache"
-OUTPUT_DIR = "output"
-EQUITY_OUT = os.path.join(OUTPUT_DIR, "equity_curve")
-PLOT_OUT = os.path.join(OUTPUT_DIR, "plots")
-METRICS_SUMMARY = os.path.join(OUTPUT_DIR, "metrics_summary.csv")
-TRADE_CSV = "manual_trades.csv"
+# ========== Paths (anchored to project root, independent of CWD) ==========
+BASE_DIR = Path(__file__).parent.resolve()
+OUTPUT_DIR = BASE_DIR / "output"
+EQUITY_OUT = OUTPUT_DIR / "equity_curve"
+PLOT_OUT = OUTPUT_DIR / "plots"
+METRICS_SUMMARY = OUTPUT_DIR / "metrics_summary.csv"
+TRADE_CSV = BASE_DIR / "manual_trades.csv"
 
-os.makedirs(CACHE_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(EQUITY_OUT, exist_ok=True)
-os.makedirs(PLOT_OUT, exist_ok=True)
+DEFAULT_STRATEGY = "maatr_base"
 
-# ===================== 加载配置 =====================
-DS = DataSource()
-CFG = DS.cfg
-GLOBAL = CFG["global_setting"]
-COMMISSION = CFG["commission_config"]
-STOCK_LIST = CFG["stock_list"]
-PARAM_POOL = {str(code): p for code, p in CFG["strategy_params"].items()}  # 键统一转str（yaml中未加引号的数字代码会被解析为int）
-VALID_CODES = [item["code"] for item in STOCK_LIST]
+logger = logging.getLogger(__name__)
 
-# 从config.yaml读取手续费配置
-comm_cfg = CFG["commission_config"]
-comminfo = AStockCommission(
-    commission=comm_cfg["commission"],
-    stamp_duty=comm_cfg["stamp_duty"],
-    transfer_fee=comm_cfg["transfer_fee"],
-)
 
-# ===================== 手工交易单据校验 =====================
-def check_manual_trade_code():
-    """校验手工交易csv内股票代码是否在config标的列表"""
-    df_trade = pd.read_csv(TRADE_CSV, dtype={"stock_code": str}, parse_dates=["trade_date"])
-    used_codes = df_trade["stock_code"].unique()
-    invalid = [c for c in used_codes if c not in VALID_CODES]
+def setup_logging():
+    """Console logging only; run_all.py captures this output into run.log."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        stream=sys.stdout,
+    )
+
+
+def prepare_output_dirs():
+    """Create output directories (cache dir is handled by DataSource)."""
+    for d in (OUTPUT_DIR, EQUITY_OUT, PLOT_OUT):
+        d.mkdir(parents=True, exist_ok=True)
+
+
+def validate_manual_trades(valid_codes):
+    """Check stock codes in manual_trades.csv against the configured stock pool."""
+    df_trades = pd.read_csv(
+        TRADE_CSV, dtype={"stock_code": str}, parse_dates=["trade_date"]
+    )
+    invalid = [c for c in df_trades["stock_code"].unique() if c not in valid_codes]
     if invalid:
-        raise Exception(f"manual_trades.csv包含不在标的列表的代码: {invalid}")
-    return df_trade
+        raise ValueError(
+            f"manual_trades.csv contains codes missing from stock pool: {invalid}"
+        )
 
-# ===================== 获取策略与参数 =====================
-def get_strategy_param(code: str, strat_id: str):
-    strat_cls = STRATEGY_MAPPING[strat_id]
-    params = PARAM_POOL.get(code, {}).get(strat_id, {})
-    return strat_cls, params
 
-# ===================== 单标的回测入口 =====================
-def run_backtest(code: str, strat_id: str, force_refresh: bool):
-    df_data = DS.fetch_stock(code, force_refresh)
+def get_strategy_param(param_pool, code, strategy_id):
+    strategy_cls = STRATEGY_MAPPING[strategy_id]
+    params = param_pool.get(code, {}).get(strategy_id, {})
+    return strategy_cls, params
+
+
+def run_backtest(
+    dataSource, comminfo, global_setting, param_pool, code, strategy_id, force_refresh
+):
+    """Run one backtest for a single stock/strategy; return metrics dict or None."""
+    df_data = dataSource.fetch_stock(code, force_refresh)
     if df_data is None:
-        print(f"标的 {code} 获取行情失败，跳过")
+        logger.warning(f"Failed to fetch market data for {code}, skipping")
         return None
 
     cerebro = bt.Cerebro()
-    strat_cls, param_dict = get_strategy_param(code, strat_id)
-    cerebro.addstrategy(strat_cls,**param_dict)
+    strategy_cls, param_dict = get_strategy_param(param_pool, code, strategy_id)
+    cerebro.addstrategy(strategy_cls, **param_dict)
 
-    # A股扩展feed：标准OHLCV + preclose/amount/turn/pctChg 扩展字段
+    # A-share extended feed: standard OHLCV + preclose/amount/turn/pctChg columns
     data_feed = AStockData(
         dataname=df_data,
         datetime="datetime",
@@ -74,54 +86,90 @@ def run_backtest(code: str, strat_id: str, force_refresh: bool):
         low="low",
         close="close",
         volume="volume",
-        timeframe=bt.TimeFrame.Days
+        timeframe=bt.TimeFrame.Days,
     )
     cerebro.adddata(data_feed)
 
-    # 资金与手续费
-    cerebro.broker.setcash(GLOBAL["initial_capital"])
+    cerebro.broker.setcash(global_setting["initial_capital"])
     cerebro.broker.addcommissioninfo(comminfo)
-    strat_result = cerebro.run()
-    strat_instance = strat_result[0]
+    strategy_instance = cerebro.run()[0]
 
-    equity_df = strat_instance.get_equity_dataframe()
-    trades_df = strat_instance.get_trade_dataframe()
-    equity_path = os.path.join(EQUITY_OUT, f"{code}_{strat_id}_equity.csv")
+    equity_df = strategy_instance.get_equity_dataframe()
+    trades_df = strategy_instance.get_trade_dataframe()
+
+    equity_path = EQUITY_OUT / f"{code}_{strategy_id}_equity.csv"
     equity_df.to_csv(equity_path, index=False, encoding="utf-8")
 
-    # 计算指标
     metrics = calc_metrics(equity_df, trades_df)
-    # 绘图
-    plot_all(equity_df, trades_df, metrics, PLOT_OUT, code, strat_id)
     metrics["stock_code"] = code
-    metrics["strategy"] = strat_id
-    print(f"{code} {strat_id} 期末总资产:{cerebro.broker.getvalue():.2f}")
-    print(f"指标 {metrics}")
+    metrics["strategy"] = strategy_id
+
+    plot_all(equity_df, trades_df, metrics, PLOT_OUT, code, strategy_id)
+
+    logger.info(
+        f"{code} {strategy_id} final portfolio value: {cerebro.broker.getvalue():.2f}"
+    )
+    logger.info(f"Metrics: {metrics}")
     return metrics
 
-# ===================== 主入口 =====================
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--force_refresh", action="store_true", help="强制全量重拉行情覆盖缓存")
-    parser.add_argument("--strategy", default="maatr_base", help="指定策略标识")
+
+def main():
+    parser = argparse.ArgumentParser(description="SkyQuant backtest main engine")
+    parser.add_argument(
+        "--force_refresh",
+        action="store_true",
+        help="Force full re-download of market data, overwriting cache",
+    )
+    parser.add_argument(
+        "--strategy", default=DEFAULT_STRATEGY, help="Strategy id to backtest"
+    )
     args = parser.parse_args()
 
-    # 校验手工交易文件
+    setup_logging()
+    prepare_output_dirs()
+
+    # Load config and build runtime dependencies
+    ds = DataSource()
+    cfg = ds.cfg
+    global_setting = cfg["global_setting"]
+    stock_list = cfg["stock_list"]
+    valid_codes = [item["code"] for item in stock_list]
+    # Normalize keys to str (unquoted numeric codes in yaml are parsed as int)
+    param_pool = {str(code): p for code, p in cfg["strategy_params"].items()}
+
+    comm_cfg = cfg["commission_config"]
+    comminfo = AStockCommission(
+        commission=comm_cfg["commission"],
+        stamp_duty=comm_cfg["stamp_duty"],
+        transfer_fee=comm_cfg["transfer_fee"],
+    )
+
+    # Sanity-check manual trade records (non-fatal warning only)
     try:
-        check_manual_trade_code()
+        validate_manual_trades(valid_codes)
     except Exception as e:
-        print("交易单据校验警告：", e)
+        logger.warning(f"Manual trade validation warning: {e}")
 
     metric_rows = []
-    # 批量回测标的
-    for stock_info in STOCK_LIST:
-        c = stock_info["code"]
-        name = stock_info["name"]
-        print(f"\n==== 开始回测标的:{name}({c}) ====")
-        res = run_backtest(c, args.strategy, args.force_refresh)
-        if res is not None:
-            metric_rows.append(res)
-    # 保存汇总指标
+    for stock_info in stock_list:
+        code, name = stock_info["code"], stock_info["name"]
+        logger.info(f"==== Backtesting {name}({code}) ====")
+        metrics = run_backtest(
+            ds,
+            comminfo,
+            global_setting,
+            param_pool,
+            code,
+            args.strategy,
+            args.force_refresh,
+        )
+        if metrics is not None:
+            metric_rows.append(metrics)
+
     if metric_rows:
         pd.DataFrame(metric_rows).to_csv(METRICS_SUMMARY, index=False, encoding="utf-8")
-        print(f"\n指标汇总已保存到 {METRICS_SUMMARY}")
+        logger.info(f"Metrics summary saved to {METRICS_SUMMARY}")
+
+
+if __name__ == "__main__":
+    main()

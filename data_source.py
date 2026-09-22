@@ -15,8 +15,16 @@ DEFAULT_CREDENTIALS_PATH = os.path.expanduser("~/.skyquant/tushare.yaml")
 # ===================== 数据格式常量 =====================
 # 完整业务字段（最终全部需要的字段，包含 turn 换手率）
 RAW_COLS = [
-    "trade_date", "open", "high", "low", "close",
-    "pre_close", "vol", "amount", "turn", "pct_chg"
+    "trade_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "pre_close",
+    "vol",
+    "amount",
+    "turn",
+    "pct_chg",
 ]
 
 # 映射适配backtrader命名
@@ -24,14 +32,20 @@ RENAME_MAP = {
     "trade_date": "trade_date",
     "pre_close": "preclose",
     "vol": "volume",
-    "pct_chg": "pctChg"
+    "pct_chg": "pctChg",
 }
 
 
 class AStockData(bt.feeds.PandasData):
     """A股扩展K线feed：在标准OHLCV之外挂载 preclose/amount/turn/pctChg 扩展字段，
     策略内可通过 self.data.preclose[0] 等方式读取（-1 表示按列名自动匹配DataFrame列）"""
-    lines = ("preclose", "amount", "turn", "pctChg",)
+
+    lines = (
+        "preclose",
+        "amount",
+        "turn",
+        "pctChg",
+    )
     params = (
         ("preclose", -1),
         ("amount", -1),
@@ -49,8 +63,12 @@ class DataSource:
     RAW_COLS = RAW_COLS
     RENAME_MAP = RENAME_MAP
 
-    def __init__(self, config_path: Optional[str] = None, cache_root: Optional[str] = None,
-                 credentials_path: Optional[str] = None):
+    def __init__(
+        self,
+        config_path: Optional[str] = None,
+        cache_root: Optional[str] = None,
+        credentials_path: Optional[str] = None,
+    ):
         self.src_dir = os.path.dirname(os.path.abspath(__file__))
 
         # 配置文件路径
@@ -103,14 +121,13 @@ class DataSource:
         return f"{stock_code}.SZ"
 
     @staticmethod
-    def _merge_kline_and_turn(df_kline: pd.DataFrame, df_turn: pd.DataFrame) -> pd.DataFrame:
+    def _merge_kline_and_turn(
+        df_kline: pd.DataFrame, df_turn: pd.DataFrame
+    ) -> pd.DataFrame:
         """合并K线数据 + 换手率数据（turnover_rate -> turn，空值填0）"""
         df_turn = df_turn.rename(columns={"turnover_rate": "turn"})
         df_merge = pd.merge(
-            df_kline,
-            df_turn[["trade_date", "turn"]],
-            on="trade_date",
-            how="left"
+            df_kline, df_turn[["trade_date", "turn"]], on="trade_date", how="left"
         )
         df_merge["turn"] = df_merge["turn"].fillna(0.0)
         return df_merge
@@ -119,7 +136,9 @@ class DataSource:
         """字段清洗、时间转换、列名适配、保留全部业务字段（含turn）"""
         missing_cols = [col for col in self.RAW_COLS if col not in df.columns]
         if missing_cols:
-            raise ValueError(f"返回行情缺少必要字段: {missing_cols}, 原始列:{list(df.columns)}")
+            raise ValueError(
+                f"返回行情缺少必要字段: {missing_cols}, 原始列:{list(df.columns)}"
+            )
 
         df = df[self.RAW_COLS].copy()
         df["datetime"] = pd.to_datetime(df["trade_date"])
@@ -134,13 +153,16 @@ class DataSource:
         ts_code = self.get_ts_code(stock_code)
         try:
             df_kline = ts.pro_bar(
-                ts_code=ts_code, adj="qfq",
-                start_date=self.start_date, end_date=self.end_date
+                ts_code=ts_code,
+                adj="qfq",
+                start_date=self.start_date,
+                end_date=self.end_date,
             )
             df_turn = self.pro.daily_basic(
                 ts_code=ts_code,
-                start_date=self.start_date, end_date=self.end_date,
-                fields="trade_date,turnover_rate"
+                start_date=self.start_date,
+                end_date=self.end_date,
+                fields="trade_date,turnover_rate",
             )
         except Exception as err:
             print(f"【接口异常】{stock_code} 请求失败:{str(err)}")
@@ -152,21 +174,25 @@ class DataSource:
 
         df_raw = self._merge_kline_and_turn(df_kline, df_turn)
         df_formatted = self.format_df(df_raw)
-        df_formatted.to_csv(os.path.join(self.cache_root, f"{stock_code}.csv"), index=False)
+        df_formatted.to_csv(
+            os.path.join(self.cache_root, f"{stock_code}.csv"), index=False
+        )
         return df_formatted
 
-    def incremental_download(self, stock_code: str, start_dt: str, end_dt: str) -> Optional[pd.DataFrame]:
+    def incremental_download(
+        self, stock_code: str, start_dt: str, end_dt: str
+    ) -> Optional[pd.DataFrame]:
         """增量拉取区间数据（K线+换手率合并）"""
         ts_code = self.get_ts_code(stock_code)
         try:
             df_kline = ts.pro_bar(
-                ts_code=ts_code, adj="qfq",
-                start_date=start_dt, end_date=end_dt
+                ts_code=ts_code, adj="qfq", start_date=start_dt, end_date=end_dt
             )
             df_turn = self.pro.daily_basic(
                 ts_code=ts_code,
-                start_date=start_dt, end_date=end_dt,
-                fields="trade_date,turnover_rate"
+                start_date=start_dt,
+                end_date=end_dt,
+                fields="trade_date,turnover_rate",
             )
         except Exception as err:
             print(f"{stock_code}增量更新失败:{err}")
@@ -179,7 +205,9 @@ class DataSource:
         return self.format_df(df_raw)
 
     # ---------------- 对外主接口 ----------------
-    def fetch_stock(self, stock_code: str, force_refresh: bool = False) -> Optional[pd.DataFrame]:
+    def fetch_stock(
+        self, stock_code: str, force_refresh: bool = False
+    ) -> Optional[pd.DataFrame]:
         """
         主拉取函数：增量更新 + 当日缓存校验 + 全字段存储（含换手率）
         :param stock_code: 六位股票代码字符串
@@ -204,7 +232,9 @@ class DataSource:
 
             # 存在历史缓存，执行增量拉取：最新本地日期 ~ 配置截止日期
             start_increment = local_latest_day.strftime("%Y%m%d")
-            df_increment = self.incremental_download(stock_code, start_increment, self.end_date)
+            df_increment = self.incremental_download(
+                stock_code, start_increment, self.end_date
+            )
 
             if df_increment is not None and not df_increment.empty:
                 df_merge = pd.concat([df_local, df_increment], ignore_index=True)

@@ -14,6 +14,7 @@ class AStockCommission(bt.CommInfoBase):
         stamp_duty: 印花税率，卖出才扣
         transfer_fee: 过户费率，买卖双向
     """
+
     params = (
         ("commission", 0.0003),
         ("stamp_duty", 0.001),

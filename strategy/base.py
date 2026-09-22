@@ -20,8 +20,8 @@ class BaseStrategy(bt.Strategy):
     """
 
     params = (
-        ("atr_period", 14),          # ATR 计算周期
-        ("max_risk_ratio", 0.02),    # 单笔最大风险占总资金比例
+        ("atr_period", 14),  # ATR 计算周期
+        ("max_risk_ratio", 0.02),  # 单笔最大风险占总资金比例
     )
 
     # ===================== 初始化 =====================
@@ -61,16 +61,20 @@ class BaseStrategy(bt.Strategy):
             exit_dt = trade.close_datetime()
             entry_value = trade.price * (self.entry_size or 0)
             profit_rate = trade.pnlcomm / entry_value if entry_value != 0 else 0
-            self.trade_log.append({
-                "entry_date": entry_dt.date(),
-                "exit_date": exit_dt.date(),
-                "entry_price": trade.price,
-                "exit_price": self.exit_price if self.exit_price is not None else trade.price,
-                "size": self.entry_size if self.entry_size is not None else 0,
-                "profit_loss": trade.pnl,
-                "profit_loss_net": trade.pnlcomm,
-                "profit_rate": profit_rate,
-            })
+            self.trade_log.append(
+                {
+                    "entry_date": entry_dt.date(),
+                    "exit_date": exit_dt.date(),
+                    "entry_price": trade.price,
+                    "exit_price": self.exit_price
+                    if self.exit_price is not None
+                    else trade.price,
+                    "size": self.entry_size if self.entry_size is not None else 0,
+                    "profit_loss": trade.pnl,
+                    "profit_loss_net": trade.pnlcomm,
+                    "profit_rate": profit_rate,
+                }
+            )
             self.entry_size = None
             self.exit_price = None
         except Exception as e:
@@ -104,10 +108,9 @@ class BaseStrategy(bt.Strategy):
     # ===================== 主循环（模板方法） =====================
     def next(self):
         # 记录每日净值
-        self.equity_log.append({
-            "datetime": self.data.datetime.date(0),
-            "equity": self.broker.getvalue()
-        })
+        self.equity_log.append(
+            {"datetime": self.data.datetime.date(0), "equity": self.broker.getvalue()}
+        )
         if not self.position:
             self._on_entry()
         else:
