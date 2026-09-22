@@ -1,0 +1,23 @@
+global_setting:
+  initial_capital: 100000.0
+  start_date: '20180101'
+  end_date: '20260921'
+commission_config:
+  commission: 0.00025
+  stamp_duty: 0.001
+  transfer_fee: 1.0e-05
+stock_list:
+- code: '000725'
+  name: 京东方A
+strategy_params:
+  '000725':
+    maatr_base:
+      atr_multiple: 2.0
+      max_risk_ratio: 0.025
+    momentum:
+      atr_multiple: 1.4
+      max_risk_ratio: 0.025
+      momentum_period: 18
+    multi_factor:
+      max_risk_ratio: 0.02
+      atr_mult: 1.6

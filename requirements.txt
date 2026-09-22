@@ -1,0 +1,6 @@
+backtrader==1.2.0
+matplotlib==3.11.1
+numpy==1.26.4
+pandas==2.3.3
+PyYAML==6.0.1
+tushare==1.4.29
