@@ -42,6 +42,8 @@ SkyQuant 是一套**全自动、可复现、可校验、可迭代**的 A 股日�
 
 - 一键全流程启动脚本，支持缓存加速模式
 
+- 每日收盘后信号生成：自动运行策略，输出买卖/持有信号及次日操作建议
+
 ### 1\.3 系统约束
 
 - 仅支持 A 股日线级别回测
@@ -64,6 +66,7 @@ SkyQuant 是一套**全自动、可复现、可校验、可迭代**的 A 股日�
 skyquant/
 ├── run_all.py                 # 一键全流水线入口
 ├── main.py                    # 回测主引擎
+├── daily_signal.py            # 每日信号生成
 ├── data_source.py             # 行情拉取与缓存
 ├── metrics_utils.py           # 量化指标计算核心
 ├── plot_utils.py              # 可视化绘图工具
@@ -81,7 +84,8 @@ skyquant/
 │   ├── out_sample_verify_result.csv
 │   ├── rolling_verify.csv
 │   ├── aggregate_common_param.csv
-│   └── manual_review_result.csv
+│   ├── manual_review_result.csv
+│   └── daily_signal_*.csv       # 每日信号报告（按日期生成）
 ├── strategy/
 │   ├── __init__.py
 │   ├── maatr_base.py
@@ -90,6 +94,7 @@ skyquant/
 │   ├── boll_ma.py
 │   └── multi_factor.py
 └── opt_pipeline/
+    ├── common.py                # 流水线共享基础设施
     ├── param_optimize.py
     ├── out_sample_verify.py
     ├── rolling_window_verify.py
@@ -124,6 +129,10 @@ skyquant/
 - `python run_all.py` 完整全量流水线
 
 - `python run_all.py --skip-data`缓存加速流水线
+
+每日信号生成（独立运行，不在 run_all.py 流水线中）：
+
+- `python daily_signal.py` 每日收盘后运行，输出买卖信号与次日操作建议
 
 ---
 
@@ -186,7 +195,7 @@ skyquant/
 
 - write\_param\_to\_config：自动落地到 config\.yaml
 
-### 4\.6 手工交易复盘模块
+### 4.6 手工交易复盘模块
 
 匹配规则：
 
@@ -195,6 +204,32 @@ skyquant/
 - 统计：信号匹配率、手工胜率、平均盈亏
 
 - 输出每日对照复盘表
+
+### 4.7 daily_signal.py 每日信号生成模块
+
+每日收盘后独立运行，为 stock_list 中所有标的生成买卖信号。
+
+**信号生成逻辑**：
+
+- 读取 config.yaml 的 stock_list 与 strategy_params
+- 读取 manual_trades.csv 计算当前持仓（BUY 累加 \- SELL 累加，净量 > 0 即为持仓）
+- 覆盖 ds.end_date 为当天日期（确保增量拉取覆盖今日行情）
+- 对每只标的的每个策略运行回测，提取 action_log（决策时信号日志）
+- 信号分类：最后一根 bar 触发买入/卖出 → BUY/SELL；已有持仓无新信号 → HOLD；无持仓无信号 → WAIT
+
+**多策略共识**：
+
+- 防御性优先级：SELL > BUY > HOLD > WAIT（任一策略发出 SELL 即覆盖）
+
+**操作建议**：
+
+- 持仓 \+ SELL → 卖出
+- 持仓 \+ BUY → 加仓
+- 持仓 \+ HOLD/WAIT → 持有
+- 未持仓 \+ BUY → 买入
+- 未持仓 \+ 其他 → 等待
+
+**输出**：`output/daily_signal_{YYYYMMDD}.csv` \+ 控制台三段式摘要（持仓操作、关注列表、统计汇总）
 
 ---
 
@@ -226,6 +261,8 @@ skyquant/
 
 - manual\_review\_result\.csv：实盘复盘报告
 
+- daily\_signal\_\*\.csv：每日信号报告（按日期生成，含每标的每策略信号、共识、操作建议）
+
 ---
 
 ## 7\. 异常处理规范
@@ -256,7 +293,7 @@ scipy
 
 ## 9\. 迭代路线图
 
-- **V1\.0（当前）**：完整流水线、指标、绘图、日志、复盘
+- **V1\.0（当前）**：完整流水线、指标、绘图、日志、复盘、每日信号生成
 
 - **V1\.1**：新增卡玛比率、最大连续亏损、波动率
 

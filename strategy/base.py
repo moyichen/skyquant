@@ -31,6 +31,7 @@ class BaseStrategy(bt.Strategy):
         # Trade/equity record containers
         self.equity_log = []
         self.trade_log = []
+        self.action_log = []
         # Actual execution info recorded by notify_order
         self.entry_size = None
         self.exit_price = None
@@ -65,9 +66,7 @@ class BaseStrategy(bt.Strategy):
                     "entry_date": entry_dt.date(),
                     "exit_date": exit_dt.date(),
                     "entry_price": trade.price,
-                    "exit_price": self.exit_price
-                    if self.exit_price is not None
-                    else trade.price,
+                    "exit_price": self.exit_price if self.exit_price is not None else trade.price,
                     "size": self.entry_size if self.entry_size is not None else 0,
                     "profit_loss": trade.pnl,
                     "profit_loss_net": trade.pnlcomm,
@@ -98,18 +97,32 @@ class BaseStrategy(bt.Strategy):
         if size > 0:
             self.buy(size=size)
             self._set_stop(atr_mult)
+            self.action_log.append(
+                {
+                    "date": self.data.datetime.date(0),
+                    "side": "BUY",
+                    "price": self.data.close[0],
+                    "size": size,
+                }
+            )
 
     def _close_position(self):
         """Close position and reset stop price"""
         self.close()
         self.stop_price = None
+        self.action_log.append(
+            {
+                "date": self.data.datetime.date(0),
+                "side": "SELL",
+                "price": self.data.close[0],
+                "size": self.position.size,
+            }
+        )
 
     # ===================== Main loop (template method) =====================
     def next(self):
         # Record daily equity
-        self.equity_log.append(
-            {"datetime": self.data.datetime.date(0), "equity": self.broker.getvalue()}
-        )
+        self.equity_log.append({"datetime": self.data.datetime.date(0), "equity": self.broker.getvalue()})
         if not self.position:
             self._on_entry()
         else:
@@ -129,3 +142,6 @@ class BaseStrategy(bt.Strategy):
 
     def get_trade_dataframe(self):
         return pd.DataFrame(self.trade_log)
+
+    def get_action_dataframe(self):
+        return pd.DataFrame(self.action_log)
