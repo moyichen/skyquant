@@ -1,4 +1,5 @@
-# 网格参数优化：遍历各策略参数网格做全样本回测，仅保留盈利参数组合
+# Grid parameter optimization: traverse each strategy's parameter grid for full-sample backtests,
+# keeping only profitable parameter combinations
 import itertools
 
 import pandas as pd
@@ -31,7 +32,7 @@ PARAM_GRID = {
 def main():
     runner = BacktestRunner()
     valid_codes = [item["code"] for item in runner.ds.cfg["stock_list"]]
-    # 每个标的只读一次缓存，网格组合直接复用
+    # Each symbol's cache is read only once; grid combinations reuse it directly
     cache_map = {code: runner.ds.load_cached_data(code) for code in valid_codes}
 
     result_rows = []
@@ -42,7 +43,7 @@ def main():
             for code in valid_codes:
                 df = cache_map[code]
                 if df is None or df.empty:
-                    print(f"标的 {code} 无缓存数据，跳过")
+                    print(f"Symbol {code} has no cached data, skipping")
                     continue
                 try:
                     final_value = runner.run(df, strategy_id, param_dict)
@@ -59,12 +60,12 @@ def main():
                         }
                     )
                 except Exception as e:
-                    print(f"异常 {code} {strategy_id} {param_dict}:{e}")
+                    print(f"Exception {code} {strategy_id} {param_dict}:{e}")
 
     res_df = pd.DataFrame(result_rows)
     res_df = res_df[res_df["profit_rate"] > 0]
     res_df.to_csv(PARAM_GRID_CSV, index=False, encoding="utf8")
-    print(f"网格调参结果输出:{PARAM_GRID_CSV}")
+    print(f"Grid optimization results written to:{PARAM_GRID_CSV}")
 
 
 if __name__ == "__main__":

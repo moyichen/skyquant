@@ -1,15 +1,15 @@
-# 滚动窗口稳定性校验：多组 4年训练/1年测试 窗口滚动验证参数稳定性
+# Rolling window stability check: validate parameter stability across multiple
+# 4-year train / 1-year test rolling windows
 import pandas as pd
-
 from common import (
+    OUT_SAMPLE_CSV,
+    ROLLING_CSV,
     BacktestRunner,
     extract_params,
     read_stage_csv,
-    OUT_SAMPLE_CSV,
-    ROLLING_CSV,
 )
 
-# 外样本结果 CSV 中非策略参数的列
+# Non-strategy-parameter columns in the out-of-sample result CSV
 NON_PARAM_COLS = [
     "stock_code",
     "strategy",
@@ -20,9 +20,10 @@ NON_PARAM_COLS = [
 
 
 def rolling_slice(df, start_year=2020, train_len=4, test_len=1):
-    """生成滚动的 训练/测试 行情片段对，样本量不足的窗口丢弃"""
+    """Generate rolling train/test market data slice pairs; windows with insufficient
+    sample size are dropped"""
     windows = []
-    for offset in range(0, 7):
+    for offset in range(7):
         train_s = f"{start_year + offset}-01-01"
         train_e = f"{start_year + offset + train_len}-12-31"
         test_s = f"{start_year + offset + train_len + 1}-01-01"
@@ -49,7 +50,7 @@ def main():
 
         full_df = runner.ds.load_cached_data(code)
         if full_df is None or full_df.empty:
-            print(f"标的 {code} 无缓存数据，跳过")
+            print(f"Symbol {code} has no cached data, skipping")
             continue
 
         test_rate_list = []
@@ -75,7 +76,7 @@ def main():
     if not res_df.empty:
         res_df = res_df[res_df["valid"] == 1]
     res_df.to_csv(ROLLING_CSV, index=False, encoding="utf8")
-    print("滚动窗口稳定性校验完毕")
+    print("Rolling window stability check complete")
 
 
 if __name__ == "__main__":

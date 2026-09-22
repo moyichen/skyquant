@@ -1,18 +1,18 @@
-# 外样本校验：网格入选参数在训练集/测试集分别回测，剔除过拟合参数
+# Out-of-sample verification: backtest grid-selected parameters on train/test sets
+# separately to filter out overfitted parameters
 import pandas as pd
-
 from common import (
+    OUT_SAMPLE_CSV,
+    PARAM_GRID_CSV,
     BacktestRunner,
     extract_params,
     read_stage_csv,
-    PARAM_GRID_CSV,
-    OUT_SAMPLE_CSV,
 )
 
 TRAIN_END = "2024-12-31"
-# 网格结果 CSV 中非策略参数的列
+# Non-strategy-parameter columns in the grid result CSV
 NON_PARAM_COLS = ["stock_code", "strategy", "final_capital", "profit", "profit_rate"]
-# 训练/测试收益率差异超过该阈值判定为过拟合
+# A train/test profit-rate difference exceeding this threshold is flagged as overfit
 OVERFIT_THRESHOLD = 0.15
 
 
@@ -33,11 +33,11 @@ def main():
 
         cache_df = runner.ds.load_cached_data(code)
         if cache_df is None or cache_df.empty:
-            print(f"标的 {code} 无缓存数据，跳过")
+            print(f"Symbol {code} has no cached data, skipping")
             continue
         df_train, df_test = split_train_test(cache_df)
         if df_train.empty or df_test.empty:
-            print(f"标的 {code} 训练/测试集为空，跳过")
+            print(f"Symbol {code} has an empty train/test set, skipping")
             continue
 
         train_rate = runner.profit_rate(runner.run(df_train, strategy_id, param))
@@ -58,7 +58,9 @@ def main():
     if not verify_df.empty:
         verify_df = verify_df[verify_df["overfit"] == 0]
     verify_df.to_csv(OUT_SAMPLE_CSV, index=False, encoding="utf8")
-    print(f"外样本校验完成，已剔除过拟合参数，输出:{OUT_SAMPLE_CSV}")
+    print(
+        f"Out-of-sample verification complete, overfitted parameters removed, output:{OUT_SAMPLE_CSV}"
+    )
 
 
 if __name__ == "__main__":

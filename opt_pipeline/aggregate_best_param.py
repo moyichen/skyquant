@@ -1,10 +1,11 @@
-# 多标的最优参数聚合：每个 标的×策略 取滚动窗口平均收益最高的参数组合
+# Multi-symbol best parameter aggregation: for each symbol x strategy, take the parameter
+# combination with the highest rolling-window average profit
 import pandas as pd
 from common import AGGREGATE_CSV, ROLLING_CSV, extract_params, read_stage_csv
 
-# 滚动校验结果 CSV 中非策略参数的列
+# Non-strategy-parameter columns in the rolling verification result CSV
 NON_PARAM_COLS = ["stock_code", "strategy", "avg_test_profit", "valid"]
-# 空结果时保留固定表头，供下游 write_param_to_config 正常处理
+# When results are empty, keep a fixed header so the downstream write_param_to_config can process it
 EMPTY_COLUMNS = ["stock_code", "strategy", "avg_profit", "recommend_use"]
 
 
@@ -12,7 +13,7 @@ def main():
     df = read_stage_csv(ROLLING_CSV)
     aggregate_rows = []
     if df.empty:
-        print("滚动校验结果为空，无参数可聚合")
+        print("Rolling verification results are empty, no parameters to aggregate")
     else:
         for (code, strategy), group in df.groupby(["stock_code", "strategy"]):
             best_row = group.loc[group["avg_test_profit"].idxmax()]
@@ -34,7 +35,7 @@ def main():
         else pd.DataFrame(columns=EMPTY_COLUMNS)
     )
     agg_df.to_csv(AGGREGATE_CSV, index=False, encoding="utf8")
-    print("多标的最优参数聚合完成")
+    print("Multi-symbol best parameter aggregation complete")
 
 
 if __name__ == "__main__":

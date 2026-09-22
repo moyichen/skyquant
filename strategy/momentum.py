@@ -1,13 +1,14 @@
-# 动量趋势策略
-from .base import BaseStrategy
+# Momentum trend strategy
 import backtrader as bt
+
+from .base import BaseStrategy
 
 
 class MomentumStrategy(BaseStrategy):
     params = (
         ("atr_multiple", 1.5),
         ("momentum_period", 20),
-        # max_risk_ratio 继承自 BaseStrategy
+        # max_risk_ratio inherited from BaseStrategy
     )
 
     def _init_indicators(self):
@@ -16,11 +17,11 @@ class MomentumStrategy(BaseStrategy):
         )
 
     def _on_entry(self):
-        # 动量为正开多
+        # Open long when momentum is positive
         if self.mom[0] > 0:
             self._open_position(self.p.atr_multiple)
 
     def _on_exit(self):
-        # 跌破止损价 或 动量转负 平仓
+        # Close when price falls below stop or momentum turns negative
         if self.data.close[0] < self.stop_price or self.mom[0] < 0:
             self._close_position()

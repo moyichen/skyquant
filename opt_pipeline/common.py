@@ -1,12 +1,15 @@
-# opt_pipeline 各阶段共享的基础设施：
-# 路径引导、标准回测执行器、CSV行参数提取、阶段文件路径
+# Shared infrastructure for each stage of the opt_pipeline:
+# path bootstrap, standard backtest executor, CSV row param extraction, stage file paths
 import os
 import sys
 from typing import Optional
 
-# 以脚本方式运行（python3 param_optimize.py）时，sys.path[0] 是本目录，
-# 项目根目录需要手动加入。各阶段脚本统一从本模块引导，sys.path hack 只保留这一处。
-PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
+# When run as a script (python3 param_optimize.py), sys.path[0] is this directory,
+# so the project root must be added manually. All stage scripts bootstrap from this
+# module, and the sys.path hack is kept only here.
+PROJECT_ROOT = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
+)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
@@ -17,7 +20,7 @@ from comm import AStockCommission
 from data_source import AStockData, DataSource
 from strategy import STRATEGY_MAPPING
 
-# ===================== 流水线阶段文件路径（绝对路径，不依赖 cwd） =====================
+# ===================== Pipeline stage file paths (absolute paths, not dependent on cwd) =====================
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
 PARAM_GRID_CSV = os.path.join(OUTPUT_DIR, "param_optimize_result.csv")
 OUT_SAMPLE_CSV = os.path.join(OUTPUT_DIR, "out_sample_verify_result.csv")
@@ -27,9 +30,10 @@ CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.yaml")
 
 
 class BacktestRunner:
-    """标准回测执行器：统一初始资金、A股费率、feed 构建，供网格/外样本/滚动校验复用。"""
+    """Standard backtest executor: unifies initial capital, A-share commission, and feed
+    construction, reused by grid/out-of-sample/rolling verification."""
 
-    def __init__(self, data_source: Optional = None):
+    def __init__(self, data_source: Optional[DataSource] = None):
         self.ds = data_source or DataSource()
         cfg = self.ds.cfg
         self.initial_capital = cfg["global_setting"]["initial_capital"]
@@ -41,7 +45,7 @@ class BacktestRunner:
         )
 
     def run(self, df: pd.DataFrame, strategy_id: str, params: dict) -> float:
-        """在给定行情片段上运行单策略，返回期末资产"""
+        """Run a single strategy on the given market data slice and return the final asset value"""
         cerebro = bt.Cerebro()
         cerebro.addstrategy(STRATEGY_MAPPING[strategy_id], **params)
         cerebro.adddata(AStockData(dataname=df, datetime="datetime"))
@@ -51,15 +55,16 @@ class BacktestRunner:
         return cerebro.broker.getvalue()
 
     def profit_rate(self, final_value: float) -> float:
-        """期末资产相对初始资金的收益率"""
+        """Return the profit rate of the final asset value relative to the initial capital"""
         return (final_value - self.initial_capital) / self.initial_capital
 
 
 def extract_params(row, exclude_cols) -> dict:
-    """从阶段 CSV 的一行提取策略参数：
-    - 剔除非参数列
-    - 丢弃 NaN（不同策略参数列不同，缺失列读出为 NaN）
-    - period 类参数强转 int（CSV 含 NaN 列会整体变 float）
+    """Extract strategy parameters from a row of a stage CSV:
+    - Exclude non-parameter columns
+    - Drop NaN values (different strategies have different parameter columns,
+      missing columns are read out as NaN)
+    - Force period-type parameters to int (a CSV column containing NaN becomes float as a whole)
     """
     param_cols = [col for col in row.index if col not in exclude_cols]
     params = {k: v for k, v in row[param_cols].to_dict().items() if pd.notna(v)}
@@ -67,13 +72,15 @@ def extract_params(row, exclude_cols) -> dict:
 
 
 def to_native(params: dict) -> dict:
-    """numpy 标量转 Python 原生类型（yaml.dump 不支持 np.float64 等，会报 RepresenterError）"""
+    """Convert numpy scalars to native Python types (yaml.dump does not support
+    np.float64 etc., which would raise a RepresenterError)"""
     return {k: (v.item() if hasattr(v, "item") else v) for k, v in params.items()}
 
 
 def read_stage_csv(path: str) -> pd.DataFrame:
-    """读取流水线阶段产物 CSV：
-    stock_code 强制字符串防止前导零丢失（000725 -> 725）；空文件返回空 DataFrame"""
+    """Read a pipeline stage output CSV:
+    stock_code is forced to string to prevent leading zeros from being lost
+    (000725 -> 725); an empty file returns an empty DataFrame"""
     try:
         return pd.read_csv(path, dtype={"stock_code": str})
     except pd.errors.EmptyDataError:

@@ -4,15 +4,15 @@ import backtrader as bt
 
 class AStockCommission(bt.CommInfoBase):
     """
-    A股自定义交易手续费模型
-    继承 bt.CommInfoBase
-    费率说明：
-        买入：佣金 + 过户费
-        卖出：佣金 + 过户费 + 印花税（仅卖出单边征收）
-    参数：
-        commission: 佣金率（百分比）
-        stamp_duty: 印花税率，卖出才扣
-        transfer_fee: 过户费率，买卖双向
+    Custom A-share trading commission model
+    Inherits from bt.CommInfoBase
+    Fee description:
+        Buy: commission + transfer fee
+        Sell: commission + transfer fee + stamp duty (levied only on the sell side)
+    Parameters:
+        commission: commission rate (percentage)
+        stamp_duty: stamp duty rate, charged only on sell
+        transfer_fee: transfer fee rate, applied to both buy and sell
     """
 
     params = (
@@ -25,16 +25,16 @@ class AStockCommission(bt.CommInfoBase):
     )
 
     def _getcommission(self, size, price, pseudoexec):
-        # size >0 买入；size <0 卖出
+        # size > 0 means buy; size < 0 means sell
         trade_value = abs(size) * price
         comm_fee = trade_value * self.p.commission
         transfer_fee = trade_value * self.p.transfer_fee
 
         if size > 0:
-            # 买入
+            # Buy
             total_fee = comm_fee + transfer_fee
         else:
-            # 卖出，增加印花税
+            # Sell, add stamp duty
             stamp_fee = trade_value * self.p.stamp_duty
             total_fee = comm_fee + transfer_fee + stamp_fee
         return total_fee
