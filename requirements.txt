@@ -1,4 +1,6 @@
-backtrader==1.2.0
+backtrader==1.9.78.123
+bokeh==3.10.0
+btplotting==0.2.2
 matplotlib==3.11.1
 numpy==1.26.4
 pandas==2.3.3

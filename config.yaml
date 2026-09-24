@@ -1,11 +1,26 @@
 global_setting:
   initial_capital: 100000.0
-  start_date: '20200101'
+  start_date: '20240101'
   end_date: '20260921'
 commission_config:
   commission: 0.00025
   stamp_duty: 0.001
   transfer_fee: 1.0e-05
+opt_pipeline:
+  # Out-of-sample verification: split data into train/test at this date
+  out_sample_train_end: '2024-12-31'
+  # Train/test profit-rate difference exceeding this threshold is flagged as overfit
+  out_sample_overfit_threshold: 0.15
+  # Rolling window verification: start year of the first window
+  rolling_start_year: 2020
+  # Rolling window: training window length in years
+  rolling_train_years: 4
+  # Rolling window: test window length in years
+  rolling_test_years: 1
+  # Rolling window: minimum bars required in a training slice (reject window if too few)
+  rolling_min_train_bars: 200
+  # Rolling window: minimum bars required in a test slice (must exceed largest indicator minperiod, e.g. SMA60 -> 60)
+  rolling_min_test_bars: 100
 stock_list:
 - code: '601606'
   name: 长城军工
@@ -65,16 +80,16 @@ strategy_params:
       atr_multiple: 2.0
       max_risk_ratio: 0.025
     momentum:
-      atr_multiple: 1.5
-      max_risk_ratio: 0.02
-      momentum_period: 22
+      atr_multiple: 1.4
+      max_risk_ratio: 0.025
+      momentum_period: 18
     multi_factor:
       max_risk_ratio: 0.02
       atr_mult: 1.6
   '000001':
     maatr_base:
+      max_risk_ratio: 0.025
       atr_multiple: 1.6
-      max_risk_ratio: 0.02
     momentum:
       atr_multiple: 1.7
       max_risk_ratio: 0.02
@@ -84,16 +99,28 @@ strategy_params:
       atr_mult: 1.6
   000538:
     maatr_base:
-      atr_multiple: 1.6
-      max_risk_ratio: 0.025
+      atr_multiple: 1.8
+      max_risk_ratio: 0.015
     multi_factor:
       max_risk_ratio: 0.02
       atr_mult: 1.7
+    momentum:
+      atr_multiple: 1.5
+      max_risk_ratio: 0.025
+      momentum_period: 18
+    boll_ma:
+      max_risk_ratio: 0.02
+      atr_mult: 1.6
+      boll_period: 18
   '000651':
     momentum:
-      atr_multiple: 1.4
       max_risk_ratio: 0.025
+      atr_multiple: 1.4
       momentum_period: 22
+    boll_ma:
+      max_risk_ratio: 0.02
+      atr_mult: 1.8
+      boll_period: 18
   000792:
     maatr_base:
       atr_multiple: 1.6
@@ -113,9 +140,12 @@ strategy_params:
     multi_factor:
       max_risk_ratio: 0.02
       atr_mult: 1.6
+    maatr_base:
+      atr_multiple: 1.6
+      max_risk_ratio: 0.025
   '002222':
     maatr_base:
-      atr_multiple: 1.8
+      atr_multiple: 1.6
       max_risk_ratio: 0.025
     momentum:
       atr_multiple: 1.4
@@ -137,7 +167,7 @@ strategy_params:
       atr_mult: 1.6
   '002475':
     maatr_base:
-      atr_multiple: 1.8
+      atr_multiple: 1.6
       max_risk_ratio: 0.025
     momentum:
       atr_multiple: 1.4
@@ -160,14 +190,18 @@ strategy_params:
       momentum_period: 18
   '600111':
     maatr_base:
-      atr_multiple: 1.8
+      atr_multiple: 1.6
       max_risk_ratio: 0.025
     multi_factor:
       max_risk_ratio: 0.02
       atr_mult: 1.6
+    momentum:
+      atr_multiple: 1.5
+      max_risk_ratio: 0.025
+      momentum_period: 22
   '600309':
     maatr_base:
-      atr_multiple: 1.6
+      atr_multiple: 1.8
       max_risk_ratio: 0.025
     momentum:
       atr_multiple: 1.7
@@ -193,6 +227,12 @@ strategy_params:
       atr_multiple: 1.5
       max_risk_ratio: 0.025
       momentum_period: 22
+    maatr_base:
+      atr_multiple: 2.0
+      max_risk_ratio: 0.015
+    multi_factor:
+      max_risk_ratio: 0.018
+      atr_mult: 1.6
   '601138':
     maatr_base:
       atr_multiple: 1.6
@@ -212,7 +252,7 @@ strategy_params:
     momentum:
       atr_multiple: 1.4
       max_risk_ratio: 0.025
-      momentum_period: 22
+      momentum_period: 18
   '601606':
     boll_ma:
       max_risk_ratio: 0.02
@@ -237,6 +277,12 @@ strategy_params:
       atr_multiple: 1.4
       max_risk_ratio: 0.025
       momentum_period: 22
+    maatr_base:
+      atr_multiple: 1.6
+      max_risk_ratio: 0.025
+    multi_factor:
+      max_risk_ratio: 0.02
+      atr_mult: 1.6
   '603173':
     momentum:
       atr_multiple: 1.4
@@ -244,4 +290,22 @@ strategy_params:
       momentum_period: 22
     multi_factor:
       max_risk_ratio: 0.02
-      atr_mult: 1.9
+      atr_mult: 1.6
+    maatr_base:
+      atr_multiple: 1.6
+      max_risk_ratio: 0.025
+  '601816':
+    momentum:
+      atr_multiple: 1.4
+      max_risk_ratio: 0.025
+      momentum_period: 20
+  '600809':
+    momentum:
+      atr_multiple: 1.4
+      max_risk_ratio: 0.025
+      momentum_period: 22
+  '601633':
+    momentum:
+      atr_multiple: 1.5
+      max_risk_ratio: 0.02
+      momentum_period: 20

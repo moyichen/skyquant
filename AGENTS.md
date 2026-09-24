@@ -91,7 +91,7 @@ python main.py --stock-list 000725 --strategy maatr_base  # 仅回测指定股�
 
 ## 配置文件
 
-- config.yaml：全局配置（资金、时间区间、费率、标的池、策略参数）
+- config.yaml：全局配置（资金、时间区间、费率、标的池、策略参数、opt_pipeline 校验参数）
 - manual_trades.csv：手工交易记录（trade_date, stock_code, side, price, size）
 - ruff.toml：Ruff 格式化配置（target-version=py39, line-length=260）
 - ~/.skyquant/tushare.yaml：Tushare API token
@@ -303,6 +303,48 @@ python opt_pipeline/param_optimize.py --maxcpu 4 --stock-list 000725,600519  # �
 ```
 
 **输出 CSV 列**：`stock_code, strategy, {各策略参数}, final_capital, profit, profit_rate`
+
+### opt_pipeline/out_sample_verify.py — 外样本校验（剔除训练集过拟合）
+
+按 `opt_pipeline.out_sample_train_end` 将每只标的数据切成训练段 / 测试段，分别回测，若训练收益率 − 测试收益率 > `out_sample_overfit_threshold` 则判为过拟合剔除。
+
+```python
+def split_train_test(df, train_end) -> (df_train, df_test)
+```
+
+**配置项**（config.yaml 的 `opt_pipeline` 段）：
+
+| 键 | 默认值 | 含义 |
+|------|--------|------|
+| out_sample_train_end | '2024-12-31' | 训练/测试切分日期 |
+| out_sample_overfit_threshold | 0.15 | 训练−测试收益率差值阈值 |
+
+**数据不足保护**：训练段或测试段 K 线数 < 60（SMA60 最小周期下限）时跳过该标的并打印 `[ERROR]` 提示，附 3 条改进方法（前移 start_date、后移 train_end、接受数据窗口过短）。
+
+### opt_pipeline/rolling_window_verify.py — 滚动窗口稳定性校验
+
+按 `rolling_start_year` 起、`rolling_train_years` + `rolling_test_years` 长度滚动生成多个年度对齐窗口，对每个测试段回测并取平均收益率，平均收益 > 0 视为稳定。窗口同时满足 `rolling_min_train_bars` / `rolling_min_test_bars` 才被采纳。
+
+```python
+def rolling_slice(df, start_year=2020, train_years=4, test_years=1,
+                  min_train_bars=200, min_test_bars=100) -> List[Tuple[df_train, df_test]]
+```
+
+**配置项**（config.yaml 的 `opt_pipeline` 段）：
+
+| 键 | 默认值 | 含义 |
+|------|--------|------|
+| rolling_start_year | 2020 | 首个窗口起点年份 |
+| rolling_train_years | 4 | 训练窗口长度（年） |
+| rolling_test_years | 1 | 测试窗口长度（年） |
+| rolling_min_train_bars | 200 | 训练段最低 K 线数 |
+| rolling_min_test_bars | 100 | 测试段最低 K 线数（>60，不可低于 SMA60 minperiod） |
+
+**数据不足保护**：若某标的在所有 7 个滚动窗口中均不满足最低 K 线数（即 `rolling_slice` 返回空），跳过该标的并打印 `[ERROR]` 提示，附 4 条改进方法（前移 start_date、缩小 train/test_years、降低 min_bars 但不得低于 60、后移 start_year）。若全部标的被跳过、结果表为空，额外打印整体失败提示。
+
+**start_date 下限**（end_date=2026-09-21、默认滚动参数）：
+- 至少 1 个有效窗口（训练段 >200 根）：start_date ≤ 2024-03-04
+- 推荐（训练段 242 根 + 2 个有效窗口）：start_date = 2024-01-01
 
 ### manual_trade_review.py
 

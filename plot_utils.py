@@ -32,26 +32,16 @@ def plot_equity_drawdown(equity_df: pd.DataFrame, metrics: dict, save_path: str)
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
     equity_df["datetime"] = pd.to_datetime(equity_df["datetime"])
     equity_df["cum_max"] = equity_df["equity"].cummax()
-    equity_df["drawdown"] = (equity_df["equity"] - equity_df["cum_max"]) / equity_df[
-        "cum_max"
-    ]
+    equity_df["drawdown"] = (equity_df["equity"] - equity_df["cum_max"]) / equity_df["cum_max"]
 
-    ax1.plot(
-        equity_df["datetime"], equity_df["equity"], color="#2E86AB", label="Equity"
-    )
-    ax1.set_title(
-        f"Equity Curve | Annual:{metrics['annual_return']:.2%} Sharpe:{metrics['sharpe_ratio']:.2f} Max Drawdown:{metrics['max_drawdown']:.2%}"
-    )
+    ax1.plot(equity_df["datetime"], equity_df["equity"], color="#2E86AB", label="Equity")
+    ax1.set_title(f"Equity Curve | Annual:{metrics['annual_return']:.2%} Sharpe:{metrics['sharpe_ratio']:.2f} Max Drawdown:{metrics['max_drawdown']:.2%}")
     ax1.set_ylabel("Assets")
     ax1.legend()
     ax1.grid(alpha=0.3)
 
-    ax2.plot(
-        equity_df["datetime"], equity_df["drawdown"], color="#A23B72", label="Drawdown"
-    )
-    ax2.fill_between(
-        equity_df["datetime"], equity_df["drawdown"], 0, color="#A23B72", alpha=0.2
-    )
+    ax2.plot(equity_df["datetime"], equity_df["drawdown"], color="#A23B72", label="Drawdown")
+    ax2.fill_between(equity_df["datetime"], equity_df["drawdown"], 0, color="#A23B72", alpha=0.2)
     ax2.set_ylabel("Drawdown")
     ax2.set_xlabel("Date")
     ax2.legend()
@@ -72,9 +62,7 @@ def plot_win_pie(metrics: dict, save_path: str):
         colors=["#57CC99", "#F38181"],
         autopct="%.1f%%",
     )
-    ax.set_title(
-        f"Trade Win Rate Pie | Total Trades:{metrics['total_trades']},Profit Factor:{metrics['profit_factor']:.2f}"
-    )
+    ax.set_title(f"Trade Win Rate Pie | Total Trades:{metrics['total_trades']},Profit Factor:{metrics['profit_factor']:.2f}")
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close()
 
@@ -86,3 +74,24 @@ def plot_all(equity_df, trades_df, metrics, out_dir, code, strategy_name):
     plot_equity_drawdown(equity_df, metrics, eq_path)
     plot_win_pie(metrics, pie_path)
     return eq_path, pie_path
+
+
+def render_interactive_chart(strategy, out_dir, code, strategy_name):
+    """Render an interactive Bokeh HTML chart via btplotting (after cerebro.run).
+
+    BacktraderPlotting is not a bt.Analyzer subclass (no _start hook), so it
+    cannot be registered via cerebro.addanalyzer. Instead, instantiate it
+    after the backtest and call plot(strategy) + show(). With
+    output_mode="save" the show() call writes the HTML file without opening
+    a browser. Returns the output path for logging.
+    """
+    try:
+        from btplotting import BacktraderPlotting
+    except ImportError as exc:
+        raise RuntimeError("btplotting is not installed; run `pip install btplotting` to enable interactive charts") from exc
+    os.makedirs(out_dir, exist_ok=True)
+    html_path = os.path.join(out_dir, f"{code}_{strategy_name}_interactive.html")
+    plotter = BacktraderPlotting(filename=html_path, output_mode="save")
+    plotter.plot(strategy)
+    plotter.show()
+    return html_path

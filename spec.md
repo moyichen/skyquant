@@ -187,13 +187,33 @@ skyquant/
 
 - param\_optimize：全网格暴力搜索
 
-- out\_sample\_verify：剔除训练过拟合（训练/测试拆分）
+- out\_sample\_verify：剔除训练过拟合（训练/测试拆分）。按 `opt_pipeline.out_sample_train_end` 切分数据为训练段 / 测试段，分别回测，若训练收益率 − 测试收益率 > `opt_pipeline.out_sample_overfit_threshold` 则判为过拟合剔除。当训练段或测试段 K 线数 < 60（SMA60 最小周期下限）时跳过该标的并打印 `[ERROR]` 提示与改进方法。
 
-- rolling\_window\_verify：多窗口稳定性筛选
+- rolling\_window\_verify：多窗口稳定性筛选。按 `opt_pipeline.rolling_start_year` 起、`rolling_train_years` + `rolling_test_years` 长度滚动生成多个年度对齐窗口，对每个测试段回测并取平均收益率，平均收益 > 0 视为稳定。窗口同时满足 `rolling_min_train_bars` / `rolling_min_test_bars` 才被采纳。若某标的在所有窗口中均不满足最低 K 线数，跳过并打印 `[ERROR]` 提示与改进方法；若全部标的被跳过、结果表为空，额外打印整体失败提示。
 
 - aggregate\_best\_param：每标的每策略保留一组最优稳定参数
 
 - write\_param\_to\_config：自动落地到 config\.yaml
+
+**滚动校验配置项**（config\.yaml 的 `opt_pipeline` 段，均为年度对齐窗口参数）：
+
+| 键 | 默认值 | 含义 |
+|------|--------|------|
+| out\_sample\_train\_end | '2024-12-31' | 外样本训练/测试切分日期 |
+| out\_sample\_overfit\_threshold | 0.15 | 训练−测试收益率差值阈值 |
+| rolling\_start\_year | 2020 | 首个滚动窗口起点年份 |
+| rolling\_train\_years | 4 | 训练窗口长度（年） |
+| rolling\_test\_years | 1 | 测试窗口长度（年） |
+| rolling\_min\_train\_bars | 200 | 训练段最低 K 线数 |
+| rolling\_min\_test\_bars | 100 | 测试段最低 K 线数（>60，不可低于 SMA60 minperiod） |
+
+**start\_date 下限约束**（end\_date=2026-09-21、默认滚动参数）：
+
+- 至少 1 个有效滚动窗口（训练段 > 200 根）：start\_date ≤ 2024-03-04
+
+- 推荐（训练段 242 根 + 2 个有效窗口）：start\_date = 2024-01-01
+
+- 绝对底线（外样本训练段 ≥ 60 根，但无统计意义）：start\_date ≤ 2024-10-08
 
 ### 4.6 手工交易复盘模块
 
@@ -240,6 +260,8 @@ skyquant/
 - global\_setting：资金、回测时间区间
 
 - commission\_config：完整A股交易费率
+
+- opt\_pipeline：外样本校验与滚动窗口校验的可调参数（切分日期、过拟合阈值、窗口长度、最低 K 线数），详见 4.5 节
 
 - tushare 密钥独立存放于用户目录 `~/.skyquant/tushare.yaml`（不随项目入库），config.yaml 中不包含 token
 

@@ -192,6 +192,16 @@ class DataSource:
         return self.format_df(df_raw)
 
     # ---------------- Public main interface ----------------
+    def _filter_by_start_date(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Trim rows earlier than the configured start_date.
+
+        Cache files keep full download history; only the returned DataFrame
+        is trimmed so all consumers (backtest, optimization, daily signal)
+        respect global_setting.start_date.
+        """
+        start_dt = pd.to_datetime(self.start_date)
+        return df[df["datetime"] >= start_dt].reset_index(drop=True)
+
     def fetch_stock(self, stock_code: str, force_refresh: bool = False) -> Optional[pd.DataFrame]:
         """
         Main fetch function: incremental update + same-day cache validation + full-field storage (including turnover)
@@ -213,7 +223,7 @@ class DataSource:
 
             # Already updated today, return local data without calling API to save credits
             if local_latest_day >= datetime.date.today():
-                return df_local
+                return self._filter_by_start_date(df_local)
 
             # Historical cache exists, run incremental fetch: latest local date ~ config end date
             start_increment = local_latest_day.strftime("%Y%m%d")
@@ -224,10 +234,10 @@ class DataSource:
                 df_merge.drop_duplicates(subset=["datetime"], keep="last", inplace=True)
                 df_merge.sort_values("datetime", inplace=True)
                 df_merge.to_csv(cache_path, index=False)
-                return df_merge
+                return self._filter_by_start_date(df_merge)
 
             # No new data, return old cache directly
-            return df_local
+            return self._filter_by_start_date(df_local)
 
         # Branch 3: no local cache, first full download
         return self.full_download_save(stock_code)
@@ -237,4 +247,4 @@ class DataSource:
         cache_file = os.path.join(self.cache_root, f"{stock_code}.csv")
         if not os.path.exists(cache_file):
             return None
-        return pd.read_csv(cache_file, parse_dates=["datetime"])
+        return self._filter_by_start_date(pd.read_csv(cache_file, parse_dates=["datetime"]))

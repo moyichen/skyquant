@@ -15,7 +15,7 @@ import pandas as pd
 from comm import AStockCommission
 from data_source import AStockData, DataSource
 from metrics_utils import calc_metrics
-from plot_utils import plot_all
+from plot_utils import plot_all, render_interactive_chart
 from strategy import STRATEGY_MAPPING
 
 # ========== Paths (anchored to project root, independent of CWD) ==========
@@ -60,7 +60,7 @@ def get_strategy_param(param_pool, code, strategy_id):
     return strategy_cls, params
 
 
-def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strategy_id, force_refresh):
+def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strategy_id, force_refresh, interactive=False):
     """Run one backtest for a single stock/strategy; return metrics dict or None."""
     df_data = dataSource.fetch_stock(code, force_refresh)
     if df_data is None:
@@ -86,6 +86,7 @@ def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strateg
 
     cerebro.broker.setcash(global_setting["initial_capital"])
     cerebro.broker.addcommissioninfo(comminfo)
+
     strategy_instance = cerebro.run()[0]
 
     equity_df = strategy_instance.get_equity_dataframe()
@@ -99,6 +100,12 @@ def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strateg
     metrics["strategy"] = strategy_id
 
     plot_all(equity_df, trades_df, metrics, PLOT_OUT, code, strategy_id)
+    if interactive:
+        try:
+            interactive_html = render_interactive_chart(strategy_instance, PLOT_OUT, code, strategy_id)
+            logger.info(f"Interactive chart saved to {interactive_html}")
+        except Exception as e:
+            logger.warning(f"Interactive chart unavailable for {code}: {e}")
 
     logger.info(f"{code} {strategy_id} final portfolio value: {cerebro.broker.getvalue():.2f}")
     logger.info(f"Metrics: {metrics}")
@@ -118,6 +125,11 @@ def main():
         type=str,
         default=None,
         help="Comma-separated stock codes to run. Defaults to all stocks in config.yaml.",
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Generate interactive Plotly HTML charts via btplotting (requires `pip install btplotting`).",
     )
     args = parser.parse_args()
 
@@ -161,6 +173,7 @@ def main():
             code,
             args.strategy,
             args.force_refresh,
+            args.interactive,
         )
         if metrics is not None:
             metric_rows.append(metrics)
