@@ -407,7 +407,46 @@ python opt_pipeline/param_optimize.py --maxcpu 4 --stock-list 000725,600519  # �
 
 **输出 CSV 列**：`stock_code, strategy, {各策略参数}, final_capital, profit, profit_rate`
 
-**profit_multiple 网格维度**：所有 5 个策略的网格均含 `profit_multiple: [2.0, 3.0, 4.0]`；策略类默认值为 2.0（止盈默认启用，显式传 None 才关闭）。
+**网格参数完整说明**：
+
+通用参数（所有策略共用，定义在 BaseStrategy；maatr_base 覆盖部分默认值）：
+
+| 参数 | 含义 | 类默认值（maatr_base 覆盖） |
+|------|------|------------------------------|
+| `max_risk_ratio` | 单笔最大风险占总资金比例，用于 ATR 仓位公式 `size = 资金×max_risk_ratio/(ATR×atr_mult)` | 0.02（maatr_base 0.015） |
+| `profit_multiple` | 固定止盈距离（ATR 倍数）；收盘价 ≥ 入场价 + profit_multiple×ATR 即平仓 | 2.0（maatr_base None，默认纯追踪止损） |
+| `trail_profit_activate` | 动态止盈激活阈值（浮盈达该 ATR 倍数后收紧止损）；None 关闭 | None |
+| `trail_tight_multiple` | 动态止盈激活后的收紧追踪止损 ATR 倍数（应小于 atr_mult） | 0.8 |
+
+各策略专属参数：
+
+| 参数 | 所属策略 | 含义 | 类默认值 |
+|------|----------|------|----------|
+| `atr_multiple` | maatr_base / momentum | 追踪止损 ATR 倍数（stop=最高价−atr_multiple×ATR），兼作仓位分母 | 1.6 / 1.5 |
+| `atr_min_rel` | maatr_base | 波动率过滤阈值，要求 ATR/close > atr_min_rel 才开仓（过滤横盘） | 0.015 |
+| `sma_fast` / `sma_slow` | maatr_base | 快/慢均线周期（当前固定 20/60，未纳入网格） | 20 / 60 |
+| `momentum_period` | momentum | 动量指标回看周期 | 20 |
+| `atr_mult` | short_reversal / boll_ma / multi_factor | 追踪止损 ATR 倍数（同 atr_multiple，仅参数名不同） | 2.0 / 1.6 / 1.7 |
+| `fall_ratio` | short_reversal | 单日跌幅阈值，(preclose−close)/preclose > fall_ratio 才开仓 | 0.18 |
+| `boll_period` | boll_ma | 布林带周期 | 20 |
+
+各策略完整网格取值（`PARAM_GRID`）：
+
+| 策略 | 网格参数 → 取值 | 组合数 |
+|------|------------------|--------|
+| maatr_base | `atr_multiple` [1.6,1.8,2.0]；`atr_min_rel` [0.008,0.015,0.025]；`max_risk_ratio` [0.015,0.02,0.025]；`profit_multiple` [2.0,3.0,4.0]；`trail_profit_activate` [1.0,1.5,2.0]；`trail_tight_multiple` [0.8,1.0,1.2] | 729 |
+| momentum | `atr_multiple` [1.4,1.5,1.7]；`max_risk_ratio` [0.02,0.025]；`momentum_period` [18,20,22]；`profit_multiple` [2.0,3.0,4.0]；`trail_profit_activate` [1.0,1.5,2.0]；`trail_tight_multiple` [0.8,1.0,1.2] | 486 |
+| short_reversal | `atr_mult` [1.8,2.0,2.2]；`max_risk_ratio` [0.02]；`fall_ratio` [0.15,0.18,0.2]；`profit_multiple` [2.0,3.0,4.0]；`trail_profit_activate` [1.0,1.5,2.0]；`trail_tight_multiple` [0.8,1.0,1.2] | 243 |
+| boll_ma | `atr_mult` [1.5,1.6,1.8]；`max_risk_ratio` [0.02]；`boll_period` [18,20,22]；`profit_multiple` [2.0,3.0,4.0]；`trail_profit_activate` [1.0,1.5,2.0]；`trail_tight_multiple` [0.8,1.0,1.2] | 243 |
+| multi_factor | `atr_mult` [1.6,1.7,1.9]；`max_risk_ratio` [0.018,0.02]；`profit_multiple` [2.0,3.0,4.0]；`trail_profit_activate` [1.0,1.5,2.0]；`trail_tight_multiple` [0.8,1.0,1.2] | 162 |
+
+> 单只股票全策略合计 1863 个组合；仅保留 `profit_rate > 0` 的组合写入 CSV。
+
+**注意事项**：
+- **专属参数必须纳入网格**：`write_param_to_config.py` 只写网格产出的列，未进网格的参数（如曾遗漏的 `atr_min_rel`）会在写配置时丢失并静默回退类默认值。
+- 网格中 `profit_multiple` 只枚举正值（固定止盈启用）；若要寻优"纯追踪止损"需显式加入 `None`。
+- `sma_fast`/`sma_slow`/`atr_period` 当前未纳入网格，按类默认值固定。
+- `atr_multiple`（maatr/momentum）与 `atr_mult`（其余三策略）语义相同，仅因历史命名不同而并存。
 
 ### opt_pipeline/out_sample_verify.py — 外样本校验（剔除训练集过拟合）
 

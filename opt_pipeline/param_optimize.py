@@ -8,6 +8,7 @@ from common import PARAM_GRID_CSV, BacktestRunner
 PARAM_GRID = {
     "maatr_base": {
         "atr_multiple": [1.6, 1.8, 2.0],
+        "atr_min_rel": [0.008, 0.015, 0.025],
         "max_risk_ratio": [0.015, 0.02, 0.025],
         "profit_multiple": [2.0, 3.0, 4.0],
         "trail_profit_activate": [1.0, 1.5, 2.0],

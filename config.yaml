@@ -71,6 +71,7 @@ strategy_params:
   '000725':
     maatr_base:
       atr_multiple: 1.8
+      atr_min_rel: 0.008
       max_risk_ratio: 0.025
       profit_multiple: 3.0
       trail_profit_activate: 1.5
