@@ -150,6 +150,31 @@ skyquant/
 
 - 子进程报错立即终止流水线
 
+### 4.1.1 strategy/ 策略模块规范
+
+**统一机制（所有策略共享）**：
+
+- **ATR 固定风险仓位**：`size = int(总资产 × max_risk_ratio / (ATR × atr_mult))`，单笔风险不超过总资金的 `max_risk_ratio`。
+- **多层级平仓（优先级从高到低）**：
+  1. **固定止盈**（`profit_multiple` 非 None 时）：价格触及 `entry_price + profit_multiple × ATR` 即平仓。
+  2. **追踪止损 + 动态止盈**（基类自动）：
+     - 基础追踪：`stop = 持仓以来最高价 - atr_mult × ATR`，只上不下（ratchet）。
+     - 动态止盈：浮盈（最高价 − 入场价）达到 `trail_profit_activate × ATR` 后，止损倍数收紧为 `trail_tight_multiple`，锁定利润但不封顶上行。
+  3. **策略专属信号止损**：子类 `_on_exit()` 中定义（如动量转负、均线死叉等）。
+- **统一输出接口**：`get_equity_dataframe()`、`get_trade_dataframe()`、`get_action_dataframe()`。
+
+**策略清单（开仓 / 专属平仓条件）**：
+
+| 策略 | 开仓条件 | 专属平仓条件（叠加追踪止损） |
+|------|----------|------------------------------|
+| maatr_base | SMA(fast) > SMA(slow) 且 ATR/close > atr_min_rel | 无（仅追踪止损/动态止盈） |
+| momentum | Momentum(period) > 0 | Momentum < 0 |
+| short_reversal | (preclose−close)/preclose > fall_ratio | 无 |
+| boll_ma | close ≤ 布林下轨 且 close > SMA(60) | close > 布林上轨 |
+| multi_factor | SMA(20) > SMA(60) 且 pctChg > −5 | SMA(20) < SMA(60) |
+
+> 全部 5 个策略（含 maatr_base）均继承 BaseStrategy，追踪止损、动态止盈、固定止盈、ATR 仓位与日志接口由基类统一提供，子类只需实现 `_init_indicators` / `_on_entry` / `_on_exit` 三个钩子。
+
 ### 4.2 main\.py 回测主引擎
 
 负责：加载配置、遍历标的、执行回测、收集净值与交易、调用指标、生成自包含 HTML 报表。

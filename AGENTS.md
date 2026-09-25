@@ -50,13 +50,13 @@ python main.py --stock-list 000725 --strategy maatr_base  # 仅回测指定股�
 | metrics_utils.py | 量化指标计算：年化收益、最大回撤、夏普比率、胜率、盈亏比 |
 | plot_utils.py | 可视化：自包含 HTML 回测报告（KPI/净值-回撤图/交易表/Analyzer）、btplotting K 线图 |
 | manual_trade_review.py | 手工交易复盘：策略信号匹配、对比统计 |
-| strategy/base.py | 策略基类：ATR 仓位管理、止损、action_log 信号日志、统一输出接口 |
+| strategy/base.py | 策略基类：ATR 仓位管理、追踪止损、动态止盈、action_log 信号日志、统一输出接口 |
 | strategy/__init__.py | STRATEGY_MAPPING 策略注册表、DEFAULT_STRATEGY_PARAMS 默认参数 |
-| strategy/maatr_base.py | 均线+ATR 策略：短均线金叉长均线买入 |
-| strategy/momentum.py | 动量策略：动量为正买入 |
-| strategy/short_reversal.py | 短期反转策略：跌幅超阈值买入 |
-| strategy/boll_ma.py | 布林带+均线策略：回踩下轨买入 |
-| strategy/multi_factor.py | 多因子策略 |
+| strategy/maatr_base.py | 均线+ATR 策略：均线多头+波动率过滤买入，继承基类追踪止损+动态止盈 |
+| strategy/momentum.py | 动量策略：动量为正买入，继承基类追踪止损+动态止盈 |
+| strategy/short_reversal.py | 短期反转策略：跌幅超阈值买入，继承基类追踪止损+动态止盈 |
+| strategy/boll_ma.py | 布林带+均线策略：回踩下轨买入，继承基类追踪止损+动态止盈 |
+| strategy/multi_factor.py | 多因子策略：均线多头+跌幅过滤买入，继承基类追踪止损+动态止盈 |
 | opt_pipeline/common.py | 流水线共享：BacktestRunner、路径常量、参数提取工具 |
 | opt_pipeline/param_optimize.py | 网格参数寻优（自建 multiprocessing.Pool 多进程） |
 | opt_pipeline/out_sample_verify.py | 外样本校验（剔除过拟合） |
@@ -113,27 +113,34 @@ python main.py --stock-list 000725 --strategy maatr_base  # 仅回测指定股�
 
 ### strategy/base.py — BaseStrategy(bt.Strategy)
 
-**参数**：`atr_period=14`（ATR 周期），`max_risk_ratio=0.02`（单笔最大风险占比），`profit_multiple=2.0`（止盈距离 ATR 倍数，默认启用；显式传 None 关闭止盈）
+**参数**：
+- `atr_period=14`（ATR 周期）
+- `max_risk_ratio=0.02`（单笔最大风险占比）
+- `profit_multiple=2.0`（固定止盈距离 ATR 倍数，默认启用；显式传 None 关闭）
+- `trail_profit_activate=None`（动态止盈激活阈值，浮盈达该 ATR 倍数后收紧止损；None 关闭）
+- `trail_tight_multiple=0.8`（动态止盈激活后的收紧追踪止损 ATR 倍数）
 
 **核心算法**：
 
 ```
-ATR 仓位公式: size = int(总资产 * max_risk_ratio / (ATR * atr_mult))
-止损价公式:   stop_price = close - ATR * atr_mult
-止盈价公式:   take_price = entry_price + ATR * profit_multiple（profit_multiple 非 None 时才计算）
+ATR 仓位公式:  size = int(总资产 * max_risk_ratio / (ATR * atr_mult))
+固定止盈价:    take_price = entry_price + ATR * profit_multiple（profit_multiple 非 None 时）
+追踪止损价:    stop = 持仓以来最高价 - atr_mult × ATR（只上不下 ratchet）
+动态止盈收紧:  浮盈(最高价 - entry_price) >= trail_profit_activate × ATR 时，
+              stop = max(stop, 最高价 - trail_tight_multiple × ATR)
 ```
 
 **方法签名**：
 
 ```python
-def _position_size(self, atr_mult) -> int        # ATR 仓位计算
-def _set_stop(self, atr_mult)                     # 设置止损价
-def _open_position(self, atr_mult)                # 买入 + 设置止损 + 记录 action_log
-def _close_position(self)                         # 卖出 + 重置止损 + 记录 action_log
-def next(self)                                    # 模板方法: 无仓位->_on_entry(); 有仓位先查止盈(take_price 触发->_close_position), 未触发->_on_exit()
+def _position_size(self, atr_mult) -> int        # ATR 仓位计算（含 NaN 守卫）
+def _open_position(self, atr_mult)                # 买入 + 设初始止损/止盈 + 记录 entry_bar/entry_atr_mult
+def _close_position(self)                         # 卖出 + 重置全部持仓状态 + 记录 action_log
+def _update_trailing_stop(self)                   # 追踪止损 + 动态止盈更新（next 调用 _on_exit 前自动执行）
+def next(self)                                    # 模板方法: 无仓->_on_entry(); 有仓先查固定止盈, 再 _update_trailing_stop, 再 _on_exit()
 def _on_entry(self)                               # 子类重写: 入场条件
-def _on_exit(self)                                # 子类重写: 出场条件
-def stop(self)                                    # 回测结束: self.final_value = broker.getvalue()（供 optimize 模式）
+def _on_exit(self)                                # 子类重写: 出场条件（检查 stop_price 或策略专属信号）
+def stop(self)                                    # 回测结束: self.final_value = broker.getvalue()
 def get_equity_dataframe() -> pd.DataFrame        # 每日净值
 def get_trade_dataframe() -> pd.DataFrame         # 已平仓交易记录
 def get_action_dataframe() -> pd.DataFrame        # 决策时信号日志（含未平仓）
@@ -144,58 +151,66 @@ def get_action_dataframe() -> pd.DataFrame        # 决策时信号日志（含�
 - `trade_log`: `{entry_date, exit_date, entry_price, exit_price, size, profit_loss, profit_loss_net, profit_rate}`
 - `equity_log`: `{datetime, equity}`
 
+**多层级平仓优先级**：固定止盈 > 追踪止损/动态止盈 > 子类信号止损。
+
 ### 策略子类 — 入场/出场条件
 
-| 策略 | 参数（默认值） | 入场条件 | 出场条件 |
-|------|---------------|----------|----------|
-| maatr_base | `atr_multiple=1.8` | close > 前收盘 + atr_multiple×ATR（ATR 通道突破） 且 SMA(20) > SMA(60) | close <= stop_price（开仓时固定） |
-| momentum | `atr_multiple=1.5`, `momentum_period=20` | Momentum(20) > 0 | close < stop_price 或 Momentum < 0 |
-| short_reversal | `atr_mult=2.0`, `fall_ratio=0.18` | (preclose - close) / preclose > fall_ratio | close < stop_price |
-| boll_ma | `atr_mult=1.6`, `boll_period=20` | close <= 布林下轨 且 close > SMA(60) | close < stop_price 或 close > 布林上轨 |
-| multi_factor | `atr_mult=1.7` | SMA(20) > SMA(60) 且 pctChg > -5 | close < stop_price 或 SMA(20) < SMA(60) |
+| 策略 | 关键参数（默认值） | 入场条件 | 出场条件 |
+|------|-------------------|----------|----------|
+| maatr_base | `atr_multiple=1.6`, `atr_min_rel=0.015`, `sma_fast=20`, `sma_slow=60` | SMA(fast) > SMA(slow) 且 ATR/close > atr_min_rel | 固定止盈 / 追踪止损+动态止盈 / 跌破止损 |
+| momentum | `atr_multiple=1.5`, `momentum_period=20` | Momentum(period) > 0 | 固定止盈 / 追踪止损+动态止盈 / 动量转负 |
+| short_reversal | `atr_mult=2.0`, `fall_ratio=0.18` | (preclose-close)/preclose > fall_ratio | 固定止盈 / 追踪止损+动态止盈 / 跌破止损 |
+| boll_ma | `atr_mult=1.6`, `boll_period=20` | close <= 布林下轨 且 close > SMA(60) | 固定止盈 / 追踪止损+动态止盈 / 突破布林上轨 |
+| multi_factor | `atr_mult=1.7` | SMA(20) > SMA(60) 且 pctChg > -5 | 固定止盈 / 追踪止损+动态止盈 / 均线死叉 |
 
-### maatr_base 策略详解（ATR 通道突破 + 均线趋势过滤）
+> 注：`profit_multiple`、`trail_profit_activate`、`trail_tight_multiple` 三个止盈止损参数定义在 BaseStrategy，所有 5 个策略（含 maatr_base）统一继承。追踪止损与动态止盈由基类 `_update_trailing_stop` 自动处理，子类无需实现。
 
-源文件：[strategy/maatr_base.py](strategy/maatr_base.py)。继承 [BaseStrategy](strategy/base.py)，复用 `_open_position` / `_close_position` / ATR 仓位与止损算法。
+### maatr_base 策略详解（均线交叉 + ATR 追踪止损）
 
-**指标**（`_init_indicators`）：
+源文件：[strategy/maatr_base.py](strategy/maatr_base.py)。**继承 BaseStrategy**，只实现 `_init_indicators`（建快慢均线，ATR 由基类创建）、`_on_entry`（均线多头 + 波动率过滤，调用基类 `_open_position(atr_multiple)`）、`_on_exit`（仅检查基类维护的追踪止损）。追踪止损、动态止盈、仓位管理、固定止盈、日志接口全部复用基类。
+
+**子类参数**（在基类参数之上新增/覆盖）：
 
 ```
-sma_fast   = SMA(close, 20)
-sma_slow   = SMA(close, 60)
-trend_ok   = sma_fast > sma_slow                       # 趋势过滤线（逐 bar 比较）
-upper_band = close(-1) + atr_multiple * atr            # ATR 通道上轨（逐 bar）
+sma_fast=20, sma_slow=60      # 新增：快慢均线周期
+atr_multiple=1.6              # 新增：追踪止损 ATR 倍数（兼作仓位分母）
+atr_min_rel=0.015             # 新增：波动率过滤阈值
+max_risk_ratio=0.015          # 覆盖基类默认 0.02
+profit_multiple=None          # 覆盖基类默认 2.0，默认纯追踪止损
 ```
 
-- `self.atr` 来自 BaseStrategy（基于完整 OHLC 数据的 `ATR(data, period=atr_period)`），子类**不得**用 `ATR(self.data.close)` 重建——ATR 内部需要 high/low/close，仅传 close 线会 `AttributeError`。
-- `close(-1)` 是 backtrader 的延迟引用（前一收盘价）；不要写成 `close[-1]`，负索引在 `__init__` 阶段无数据会 `IndexError`。
+**指标**（`_init_indicators` 只建均线，ATR 由基类 `__init__` 创建）：
 
-**入场逻辑**（`_on_entry`，仅在 `next()` 检测到 `not self.position` 时被调用）：
+```
+sma_fast = SMA(close, sma_fast)          # 默认 20
+sma_slow = SMA(close, sma_slow)          # 默认 60
+atr      = ATR(period=atr_period)        # 基类创建，默认 14
+```
 
-1. 信号：`close[0] > upper_band[0]` 且 `trend_ok[0]` 为真——当前收盘突破"前收盘 + atr_multiple×ATR"通道，且短期均线在长期均线上方
-2. 触发后调用 `self._open_position(atr_multiple)`，由 BaseStrategy 完成：
-   - 仓位计算：`size = int(broker.getvalue() * max_risk_ratio / (atr[0] * atr_multiple))`
-   - 下单：`self.buy(size=size)`
-   - 设止损：`stop_price = close[0] - atr[0] * atr_multiple`（**开仓时一次性固定**，持仓期间不再更新）
-   - 写 action_log：`{date, side: "BUY", price: close[0], size}`
+**入场逻辑**（`_on_entry`，基类 `next()` 在空仓时调用）：
 
-**出场逻辑**（`_on_exit`，仅在 `self.position` 非空时被调用）：
+1. 信号：`sma_fast[0] > sma_slow[0]` 且 `atr[0]/close[0] > atr_min_rel`——均线多头排列且波动率达标（过滤横盘假突破）
+2. 触发后调用基类 `self._open_position(self.p.atr_multiple)`：
+   - 仓位：`size = int(broker.getvalue() * max_risk_ratio / (atr[0] * atr_multiple))`
+   - 初始止损：`stop_price = entry_price - atr_multiple * atr[0]`
+   - 固定止盈（可选）：`take_price = entry_price + profit_multiple * atr[0]`
 
-1. 信号：`close[0] <= self.stop_price`（跌破开仓时设定的固定止损价；stop_price 由 `_open_position` 内部的 `_set_stop` 设置，子类无需自算）
-2. 触发后调用 `self._close_position()`，由 BaseStrategy 完成：
-   - 下单：`self.close()`（市价卖出全部仓位）
-   - 重置 `stop_price = None`
-   - 写 action_log：`{date, side: "SELL", price: close[0], size: position.size}`
-3. 平仓后由 `notify_trade()` 捕获成交并写 trade_log：`{entry_date, exit_date, entry_price, exit_price, size, profit_loss, profit_loss_net, profit_rate}`
+**出场逻辑**（全部由基类 `next()` 模板驱动，优先级从高到低）：
+
+1. 固定止盈：基类检查 `close[0] >= take_price` → 平仓
+2. 基类 `_update_trailing_stop()` 更新追踪止损 + 动态止盈：
+   - `highest = max(持仓以来最高价)`
+   - `candidate = highest - atr_multiple * atr[0]`（基础追踪）
+   - 若 `(highest - entry_price)/atr[0] >= trail_profit_activate`：`candidate = max(candidate, highest - trail_tight_multiple * atr[0])`（动态收紧）
+   - `stop_price = max(stop_price, candidate)`（只上不下）
+3. `_on_exit` 检查 `close[0] <= stop_price` → 平仓
 
 **关键设计约束**：
 
-- **只做多、不做空**：仅通道向上突破触发入场，无空头逻辑
-- **止损是 `_on_exit` 的唯一出场条件**：子类 `_on_exit` 只检查 `stop_price`，不因趋势反转（SMA 快线下穿慢线）出场；但 BaseStrategy.next() 模板在 `_on_exit` 之前统一检查止盈——配置 `profit_multiple` 后，收盘触及 `take_price` 即平仓且该 bar 跳过子类出场逻辑
-- **固定止损、非追踪止损**：`stop_price` 在开仓时计算一次，持仓期间不随价格上涨而上移；要实现 trailing stop 需在 `_on_exit` 中重写止损更新逻辑
-- **`atr_multiple` 同时决定通道宽度、仓位与止损**：值越大，通道越难突破（入场更严格）、仓位越小（分母变大）、止损越宽，风险预算保持不变（`max_risk_ratio` 默认 2%）
-- **止损后重入场**：止损平仓后需等待下一次"收盘价突破上轨 + 趋势过滤通过"才会再次入场
-- **指标预热**：SMA(60) 需要 60 根 K 线才有效；数据不足 60 根时策略不会发出有效信号
+- **只做多、不做空**
+- **追踪止损而非固定止损**：`stop_price` 随持仓最高价上移（ratchet），只上不下
+- **动态止盈不封顶上行**：盈利达标后收紧止损倍数，但价格继续上涨时止损同步上移，不会截断大趋势
+- **指标预热**：SMA(60) 需 60 根 K 线；ATR 预热期 `atr[0]` 为 NaN，基类 `_position_size` 已守卫
 
 ### strategy/__init__.py — 策略注册表
 
@@ -209,7 +224,7 @@ STRATEGY_MAPPING = {
 }
 
 DEFAULT_STRATEGY_PARAMS = {
-    "maatr_base": {"atr_multiple": 1.8, "max_risk_ratio": 0.02},
+    "maatr_base": {"atr_multiple": 1.6, "max_risk_ratio": 0.015},
     "momentum": {"atr_multiple": 1.5, "momentum_period": 20, "max_risk_ratio": 0.02},
     "short_reversal": {"atr_mult": 2.0, "fall_ratio": 0.18, "max_risk_ratio": 0.02},
     "boll_ma": {"atr_mult": 1.6, "boll_period": 20, "max_risk_ratio": 0.02},

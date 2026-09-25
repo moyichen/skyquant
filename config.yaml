@@ -70,17 +70,24 @@ stock_list:
 strategy_params:
   '000725':
     maatr_base:
-      atr_multiple: 2.0
+      atr_multiple: 1.8
       max_risk_ratio: 0.025
+      profit_multiple: 3.0
+      trail_profit_activate: 1.5
+      trail_tight_multiple: 1.2
     momentum:
       atr_multiple: 1.4
       max_risk_ratio: 0.025
-      profit_multiple: 3.0
+      profit_multiple: 2.0
+      trail_profit_activate: 1.0
+      trail_tight_multiple: 1.0
       momentum_period: 18
     multi_factor:
       max_risk_ratio: 0.02
       profit_multiple: 3.0
-      atr_mult: 1.7
+      trail_profit_activate: 2.0
+      trail_tight_multiple: 1.0
+      atr_mult: 1.6
   '000001':
     maatr_base:
       max_risk_ratio: 0.025
