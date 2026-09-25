@@ -34,7 +34,7 @@ SkyQuant 是一套**全自动、可复现、可校验、可迭代**的 A 股日�
 
 - 专业量化指标体系：年化收益、最大回撤、夏普比率、胜率、盈亏比
 
-- 自动可视化：净值回撤图、胜率饼图
+- 自动可视化：自包含 HTML 回测报表（KPI 卡片、净值-回撤联动图、交易表、Analyzer 字段表）、btplotting K 线交互图
 
 - 全局日志系统：控制台 \+ 文件双输出
 
@@ -78,7 +78,7 @@ skyquant/
 ├── output/
 │   ├── run.log                # 全流程运行日志（自动生成）
 │   ├── equity_curve/         # 每标的每日净值序列
-│   ├── plots/                 # 所有回测图表PNG
+│   ├── plots/                 # 每标的 HTML 回测报表与 btplotting K 线图
 │   ├── metrics_summary.csv    # 指标汇总表
 │   ├── param_optimize_result.csv
 │   ├── out_sample_verify_result.csv
@@ -150,9 +150,9 @@ skyquant/
 
 - 子进程报错立即终止流水线
 
-### 4\.2 main\.py 回测主引擎
+### 4.2 main\.py 回测主引擎
 
-负责：加载配置、遍历标的、执行回测、收集净值与交易、调用指标、调用绘图。
+负责：加载配置、遍历标的、执行回测、收集净值与交易、调用指标、生成自包含 HTML 报表。
 
 **所有策略强制统一接口**：
 
@@ -160,9 +160,25 @@ skyquant/
 
 - `get_trade_dataframe()` 输出每笔交易
 
+- `get_action_dataframe()` 输出决策时信号（含未平仓 BUY）
+
 - `notify_trade()` 捕获平仓记录
 
-### 4\.3 metrics\_utils\.py 指标体系（标准量化定义）
+**Cerebro analyzer 注册**（main.py 专有；其他模块复用同一 Cerebro 模式但不挂 analyzer）：
+
+```python
+cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
+cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe")
+cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
+cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="tradeanalyzer")
+cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
+```
+
+回测后通过 `getattr(strategy_instance.analyzers, name).get_analysis()` 提取结果，传入 `render_report` 的 `analyzer_results` 参数。
+
+**命令行参数**：`--force_refresh`、`--strategy`、`--stock-list`（`--interactive` 已移除，HTML 报表与 K 线图默认生成）。
+
+### 4.3 metrics\_utils\.py 指标体系（标准量化定义）
 
 |指标|计算规则|
 |---|---|
@@ -173,27 +189,54 @@ skyquant/
 |盈亏比|总盈利金额 / 总亏损金额|
 |总交易次数|全部平仓交易统计|
 
-### 4\.4 plot\_utils\.py 可视化规范
+### 4.4 plot\_utils\.py 可视化规范
 
-固定输出两张图（每标的每策略）：
+每标的每策略输出两个 HTML 文件至 `output/plots/`：
 
-1. 净值 \+ 回撤双轴曲线图
+1. `{code}_{strategy_id}_report.html` — 自包含 HTML 回测报表（Bokeh INLINE 资源，可离线打开），包含：
+   - 头部：标的名/代码、策略 id、回测区间、初始资金、最终净值、总收益率
+   - 6 张 KPI 卡片：年化收益、最大回撤、夏普比率、胜率、盈亏比、总交易数
+   - 净值曲线 \+ 回撤联动图（Bokeh，共享 x 轴，hover tooltip）
+   - 平仓交易 DataTable（Bokeh，含 NumberFormatter 金额/百分比格式）
+   - action\_log 信号表（HTML table，BUY 绿/SELL 红，含未平仓 BUY）
+   - Analyzer 字段表（递归压平 5 个 analyzer 的 namedtuple/dict/list）
+   - btplotting K 线图相对链接
 
-2. 交易胜率饼图
+2. `{code}_{strategy_id}_interactive.html` — btplotting K 线 \+ 指标 \+ 成交标记交互图
 
-所有图片统一输出至 `output/plots/`
+> 旧版 PNG 产物（`_equity_dd.png` / `_win_pie.png`）与 `plot_all` / `plot_equity_drawdown` / `plot_win_pie` / `_setup_chinese_font` 已全部移除。
 
 ### 4\.5 opt\_pipeline 参数优化规范
 
 - param\_optimize：全网格暴力搜索
 
-- out\_sample\_verify：剔除训练过拟合（训练/测试拆分）
+- out\_sample\_verify：剔除训练过拟合（训练/测试拆分）。按 `opt_pipeline.out_sample_train_end` 切分数据为训练段 / 测试段，分别回测，若训练收益率 − 测试收益率 > `opt_pipeline.out_sample_overfit_threshold` 则判为过拟合剔除。当训练段或测试段 K 线数 < 60（SMA60 最小周期下限）时跳过该标的并打印 `[ERROR]` 提示与改进方法。
 
-- rolling\_window\_verify：多窗口稳定性筛选
+- rolling\_window\_verify：多窗口稳定性筛选。按 `opt_pipeline.rolling_start_year` 起、`rolling_train_years` + `rolling_test_years` 长度滚动生成多个年度对齐窗口，对每个测试段回测并取平均收益率，平均收益 > 0 视为稳定。窗口同时满足 `rolling_min_train_bars` / `rolling_min_test_bars` 才被采纳。若某标的在所有窗口中均不满足最低 K 线数，跳过并打印 `[ERROR]` 提示与改进方法；若全部标的被跳过、结果表为空，额外打印整体失败提示。
 
 - aggregate\_best\_param：每标的每策略保留一组最优稳定参数
 
 - write\_param\_to\_config：自动落地到 config\.yaml
+
+**滚动校验配置项**（config\.yaml 的 `opt_pipeline` 段，均为年度对齐窗口参数）：
+
+| 键 | 默认值 | 含义 |
+|------|--------|------|
+| out\_sample\_train\_end | '2024-12-31' | 外样本训练/测试切分日期 |
+| out\_sample\_overfit\_threshold | 0.15 | 训练−测试收益率差值阈值 |
+| rolling\_start\_year | 2020 | 首个滚动窗口起点年份 |
+| rolling\_train\_years | 4 | 训练窗口长度（年） |
+| rolling\_test\_years | 1 | 测试窗口长度（年） |
+| rolling\_min\_train\_bars | 200 | 训练段最低 K 线数 |
+| rolling\_min\_test\_bars | 100 | 测试段最低 K 线数（>60，不可低于 SMA60 minperiod） |
+
+**start\_date 下限约束**（end\_date=2026-09-21、默认滚动参数）：
+
+- 至少 1 个有效滚动窗口（训练段 > 200 根）：start\_date ≤ 2024-03-04
+
+- 推荐（训练段 242 根 + 2 个有效窗口）：start\_date = 2024-01-01
+
+- 绝对底线（外样本训练段 ≥ 60 根，但无统计意义）：start\_date ≤ 2024-10-08
 
 ### 4.6 手工交易复盘模块
 
@@ -241,6 +284,8 @@ skyquant/
 
 - commission\_config：完整A股交易费率
 
+- opt\_pipeline：外样本校验与滚动窗口校验的可调参数（切分日期、过拟合阈值、窗口长度、最低 K 线数），详见 4.5 节
+
 - tushare 密钥独立存放于用户目录 `~/.skyquant/tushare.yaml`（不随项目入库），config.yaml 中不包含 token
 
 - stock\_list：回测标的池
@@ -257,7 +302,9 @@ skyquant/
 
 - equity\_curve/\*\.csv：每日净值序列
 
-- plots/\*\.png：可视化图表
+- plots/\*\_report\.html：自包含 HTML 回测报表（KPI/净值-回撤图/交易表/Analyzer）
+
+- plots/\*\_interactive\.html：btplotting K 线 \+ 指标 \+ 成交标记交互图
 
 - manual\_review\_result\.csv：实盘复盘报告
 
@@ -284,7 +331,8 @@ backtrader
 pandas
 numpy
 pyyaml
-matplotlib
+bokeh
+btplotting
 tushare
 scipy
 ```

@@ -21,7 +21,7 @@ class ManualTradeReview:
             self.trade_df = self.trade_df[self.trade_df["stock_code"].isin(wanted)]
         missing = [c for c in REQUIRED_COLS if c not in self.trade_df.columns]
         if missing:
-            raise ValueError(f"manual_trades.csv is missing required columns: {missing}, existing columns: {list(self.trade_df.columns)}, standard format is trade_date,stock_code,side,price,size,profit_loss")
+            raise ValueError(f"manual_trades.csv is missing required columns: {missing}, existing columns: {list(self.trade_df.columns)}, standard format is trade_date,stock_code,side,price,size")
         self.result_list = []
         comm_cfg = self.cfg["commission_config"]
         self.comminfo = AStockCommission(

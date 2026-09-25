@@ -15,8 +15,8 @@ import pandas as pd
 from comm import AStockCommission
 from data_source import AStockData, DataSource
 from metrics_utils import calc_metrics
-from plot_utils import plot_all
-from strategy import STRATEGY_MAPPING
+from plot_utils import render_interactive_chart, render_report
+from strategy import STRATEGY_DESCRIPTIONS, STRATEGY_MAPPING
 
 # ========== Paths (anchored to project root, independent of CWD) ==========
 BASE_DIR = Path(__file__).parent.resolve()
@@ -27,6 +27,9 @@ METRICS_SUMMARY = OUTPUT_DIR / "metrics_summary.csv"
 TRADE_CSV = BASE_DIR / "manual_trades.csv"
 
 DEFAULT_STRATEGY = "maatr_base"
+
+# Analyzers registered on every Cerebro; results surface in the HTML report.
+ANALYZER_NAMES = ("returns", "sharpe", "drawdown", "tradeanalyzer", "sqn")
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +63,7 @@ def get_strategy_param(param_pool, code, strategy_id):
     return strategy_cls, params
 
 
-def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strategy_id, force_refresh):
+def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strategy_id, force_refresh, stock_name=None):
     """Run one backtest for a single stock/strategy; return metrics dict or None."""
     df_data = dataSource.fetch_stock(code, force_refresh)
     if df_data is None:
@@ -86,10 +89,19 @@ def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strateg
 
     cerebro.broker.setcash(global_setting["initial_capital"])
     cerebro.broker.addcommissioninfo(comminfo)
+
+    # Analyzers feed the HTML report (returns / sharpe / drawdown / trades / sqn)
+    cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
+    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe")
+    cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
+    cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="tradeanalyzer")
+    cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
+
     strategy_instance = cerebro.run()[0]
 
     equity_df = strategy_instance.get_equity_dataframe()
     trades_df = strategy_instance.get_trade_dataframe()
+    action_df = strategy_instance.get_action_dataframe()
 
     equity_path = EQUITY_OUT / f"{code}_{strategy_id}_equity.csv"
     equity_df.to_csv(equity_path, index=False, encoding="utf-8")
@@ -98,21 +110,68 @@ def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strateg
     metrics["stock_code"] = code
     metrics["strategy"] = strategy_id
 
-    plot_all(equity_df, trades_df, metrics, PLOT_OUT, code, strategy_id)
+    # Extract analyzer results for the report; tolerate missing ones.
+    analyzer_results = {}
+    for name in ANALYZER_NAMES:
+        analyzer_obj = getattr(strategy_instance.analyzers, name, None)
+        if analyzer_obj is None:
+            continue
+        try:
+            analyzer_results[name] = analyzer_obj.get_analysis()
+        except Exception as e:
+            logger.warning(f"Analyzer {name} for {code} failed: {e}")
 
-    logger.info(f"{code} {strategy_id} final portfolio value: {cerebro.broker.getvalue():.2f}")
+    # Render btplotting K-line chart (best-effort; optional dependency)
+    interactive_html = None
+    try:
+        interactive_html = render_interactive_chart(strategy_instance, PLOT_OUT, code, strategy_id)
+        logger.info(f"Interactive chart saved to {interactive_html}")
+    except Exception as e:
+        logger.warning(f"Interactive chart unavailable for {code}: {e}")
+
+    # Render self-contained HTML report (replaces the old PNG plot_all)
+    final_value = cerebro.broker.getvalue()
+    report_path = render_report(
+        equity_df=equity_df,
+        trades_df=trades_df,
+        action_df=action_df,
+        metrics=metrics,
+        analyzer_results=analyzer_results,
+        out_dir=PLOT_OUT,
+        code=code,
+        strategy_name=strategy_id,
+        start_date=str(global_setting.get("start_date", "")),
+        end_date=str(global_setting.get("end_date", "")),
+        initial_capital=float(global_setting.get("initial_capital", 0)),
+        final_value=float(final_value),
+        interactive_html=interactive_html,
+        stock_name=stock_name,
+    )
+    logger.info(f"HTML report saved to {report_path}")
+
+    logger.info(f"{code} {strategy_id} final portfolio value: {final_value:.2f}")
     logger.info(f"Metrics: {metrics}")
     return metrics
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SkyQuant backtest main engine")
+    strategy_lines = "\n".join(f"  - {sid}: {desc}" for sid, desc in STRATEGY_DESCRIPTIONS.items())
+    parser = argparse.ArgumentParser(
+        description="SkyQuant backtest main engine",
+        epilog=f"Supported strategies:\n{strategy_lines}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--force_refresh",
         action="store_true",
         help="Force full re-download of market data, overwriting cache",
     )
-    parser.add_argument("--strategy", default=DEFAULT_STRATEGY, help="Strategy id to backtest")
+    parser.add_argument(
+        "--strategy",
+        default=DEFAULT_STRATEGY,
+        choices=list(STRATEGY_MAPPING.keys()),
+        help=f"Strategy id to backtest (default: {DEFAULT_STRATEGY})",
+    )
     parser.add_argument(
         "--stock-list",
         type=str,
@@ -143,9 +202,11 @@ def main():
         transfer_fee=comm_cfg["transfer_fee"],
     )
 
-    # Sanity-check manual trade records (non-fatal warning only)
+    # Sanity-check manual trade records against the full configured pool rather
+    # than the --stock-list filtered runtime set (non-fatal warning only)
+    pool_codes = [item["code"] for item in cfg["stock_list"]]
     try:
-        validate_manual_trades(valid_codes)
+        validate_manual_trades(pool_codes)
     except Exception as e:
         logger.warning(f"Manual trade validation warning: {e}")
 
@@ -161,6 +222,7 @@ def main():
             code,
             args.strategy,
             args.force_refresh,
+            stock_name=name,
         )
         if metrics is not None:
             metric_rows.append(metrics)

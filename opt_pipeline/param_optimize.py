@@ -9,23 +9,31 @@ PARAM_GRID = {
     "maatr_base": {
         "atr_multiple": [1.6, 1.8, 2.0],
         "max_risk_ratio": [0.015, 0.02, 0.025],
+        "profit_multiple": [2.0, 3.0, 4.0],
     },
     "momentum": {
         "atr_multiple": [1.4, 1.5, 1.7],
         "max_risk_ratio": [0.02, 0.025],
         "momentum_period": [18, 20, 22],
+        "profit_multiple": [2.0, 3.0, 4.0],
     },
     "short_reversal": {
         "atr_mult": [1.8, 2.0, 2.2],
         "max_risk_ratio": [0.02],
         "fall_ratio": [0.15, 0.18, 0.2],
+        "profit_multiple": [2.0, 3.0, 4.0],
     },
     "boll_ma": {
         "atr_mult": [1.5, 1.6, 1.8],
         "max_risk_ratio": [0.02],
         "boll_period": [18, 20, 22],
+        "profit_multiple": [2.0, 3.0, 4.0],
     },
-    "multi_factor": {"atr_mult": [1.6, 1.7, 1.9], "max_risk_ratio": [0.018, 0.02]},
+    "multi_factor": {
+        "atr_mult": [1.6, 1.7, 1.9],
+        "max_risk_ratio": [0.018, 0.02],
+        "profit_multiple": [2.0, 3.0, 4.0],
+    },
 }
 
 
@@ -34,8 +42,8 @@ def main():
     parser.add_argument(
         "--maxcpu",
         type=int,
-        default=1,
-        help="Number of CPUs for parallel optimization (0 or -1 for auto)",
+        default=0,
+        help="Number of CPUs for parallel optimization (0 or -1 for all CPUs)",
     )
     parser.add_argument(
         "--stock-list",

@@ -22,6 +22,7 @@ class BaseStrategy(bt.Strategy):
     params = (
         ("atr_period", 14),  # ATR calculation period
         ("max_risk_ratio", 0.02),  # Max risk per trade as fraction of total capital
+        ("profit_multiple", 2.0),  # Take-profit distance in ATR multiples; None disables
     )
 
     # ===================== Initialization =====================
@@ -35,8 +36,11 @@ class BaseStrategy(bt.Strategy):
         # Actual execution info recorded by notify_order
         self.entry_size = None
         self.exit_price = None
-        # Stop price
+        # Stop / take-profit prices
         self.stop_price = None
+        self.take_price = None
+        # Entry reference price (signal-bar close) for stop/take-profit calculation
+        self.entry_price = None
         # Subclass-specific indicators
         self._init_indicators()
 
@@ -92,11 +96,14 @@ class BaseStrategy(bt.Strategy):
         self.stop_price = self.data.close[0] - self.atr[0] * atr_mult
 
     def _open_position(self, atr_mult):
-        """Open position: calculate size -> buy -> set stop"""
+        """Open position: calculate size -> buy -> set stop -> set take profit"""
         size = self._position_size(atr_mult)
         if size > 0:
             self.buy(size=size)
             self._set_stop(atr_mult)
+            self.entry_price = self.data.close[0]
+            if self.p.profit_multiple:
+                self.take_price = self.entry_price + self.atr[0] * self.p.profit_multiple
             self.action_log.append(
                 {
                     "date": self.data.datetime.date(0),
@@ -107,9 +114,11 @@ class BaseStrategy(bt.Strategy):
             )
 
     def _close_position(self):
-        """Close position and reset stop price"""
+        """Close position and reset stop / take-profit prices"""
         self.close()
         self.stop_price = None
+        self.take_price = None
+        self.entry_price = None
         self.action_log.append(
             {
                 "date": self.data.datetime.date(0),
@@ -125,8 +134,13 @@ class BaseStrategy(bt.Strategy):
         self.equity_log.append({"datetime": self.data.datetime.date(0), "equity": self.broker.getvalue()})
         if not self.position:
             self._on_entry()
-        else:
-            self._on_exit()
+            return
+        # Generic take-profit: when enabled (profit_multiple set) and hit, close
+        # immediately and skip subclass exit logic for this bar
+        if self.take_price is not None and self.data.close[0] >= self.take_price:
+            self._close_position()
+            return
+        self._on_exit()
 
     def _on_entry(self):
         """Subclass override: decide whether to open when no position; call self._open_position(atr_mult) on signal"""

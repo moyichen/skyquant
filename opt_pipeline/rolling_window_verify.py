@@ -1,5 +1,7 @@
 # Rolling window stability check: validate parameter stability across multiple
-# 4-year train / 1-year test rolling windows
+# rolling train/test windows. All window parameters are configurable in
+# config.yaml (opt_pipeline section); defaults preserve the original
+# 4-year-train / 1-year-test behaviour starting from 2020.
 import pandas as pd
 from common import (
     OUT_SAMPLE_CSV,
@@ -19,30 +21,73 @@ NON_PARAM_COLS = [
 ]
 
 
-def rolling_slice(df, start_year=2020, train_len=4, test_len=1):
-    """Generate rolling train/test market data slice pairs; windows with insufficient
-    sample size are dropped"""
+def rolling_slice(
+    df,
+    start_year=2020,
+    train_years=4,
+    test_years=1,
+    min_train_bars=200,
+    min_test_bars=100,
+):
+    """Generate rolling train/test market data slice pairs; windows with
+    insufficient sample size are dropped.
+
+    Windows are anchored to calendar years (start_year, start_year+1, ...) and
+    slide forward by one year per iteration. A window is kept only when both
+    the train slice and the test slice have enough bars to exceed the largest
+    indicator warm-up in the strategy pool.
+    """
     windows = []
+    # 7 iterations cover ~5 years of overlap with 4-year train windows
     for offset in range(7):
         train_s = f"{start_year + offset}-01-01"
-        train_e = f"{start_year + offset + train_len}-12-31"
-        test_s = f"{start_year + offset + train_len + 1}-01-01"
-        test_e = f"{start_year + offset + train_len + test_len}-12-31"
-        df_train = df[
-            (df["datetime"] >= train_s) & (df["datetime"] <= train_e)
-        ].reset_index(drop=True)
-        df_test = df[
-            (df["datetime"] >= test_s) & (df["datetime"] <= test_e)
-        ].reset_index(drop=True)
-        if len(df_train) > 200 and len(df_test) > 100:
+        train_e = f"{start_year + offset + train_years}-12-31"
+        test_s = f"{start_year + offset + train_years + 1}-01-01"
+        test_e = f"{start_year + offset + train_years + test_years}-12-31"
+        df_train = df[(df["datetime"] >= train_s) & (df["datetime"] <= train_e)].reset_index(drop=True)
+        df_test = df[(df["datetime"] >= test_s) & (df["datetime"] <= test_e)].reset_index(drop=True)
+        if len(df_train) > min_train_bars and len(df_test) > min_test_bars:
             windows.append((df_train, df_test))
     return windows
 
 
+def _print_no_windows_help(code, cfg, start_date, end_date):
+    """Print actionable error and remediation when no rolling window qualifies."""
+    print(
+        f"[ERROR] Symbol {code} produced no valid rolling windows. "
+        f"Current config: start_date={start_date}, end_date={end_date}, "
+        f"rolling_start_year={cfg.get('rolling_start_year')}, "
+        f"rolling_train_years={cfg.get('rolling_train_years')}, "
+        f"rolling_test_years={cfg.get('rolling_test_years')}, "
+        f"rolling_min_train_bars={cfg.get('rolling_min_train_bars')}, "
+        f"rolling_min_test_bars={cfg.get('rolling_min_test_bars')}."
+    )
+    print(
+        "Remediation: choose one of the following —\n"
+        "  1) Move global_setting.start_date earlier so at least one train window "
+        "has > rolling_min_train_bars bars (e.g. start_date <= 2024-03-04 with the "
+        "default 4-year/1-year windows and end_date=2026-09-21).\n"
+        "  2) Reduce rolling_train_years / rolling_test_years so windows fit the data span.\n"
+        "  3) Lower rolling_min_train_bars / rolling_min_test_bars, but never below 60 "
+        "(SMA60 minperiod); backtrader crashes on slices shorter than the indicator warm-up.\n"
+        "  4) Move rolling_start_year later so the first test window overlaps the data."
+    )
+
+
 def main():
     runner = BacktestRunner()
+    cfg = runner.ds.cfg.get("opt_pipeline", {})
+    start_year = int(cfg.get("rolling_start_year", 2020))
+    train_years = int(cfg.get("rolling_train_years", 4))
+    test_years = int(cfg.get("rolling_test_years", 1))
+    min_train_bars = int(cfg.get("rolling_min_train_bars", 200))
+    min_test_bars = int(cfg.get("rolling_min_test_bars", 100))
+    start_date = runner.ds.start_date
+    end_date = runner.ds.end_date
+
     df_input = read_stage_csv(OUT_SAMPLE_CSV)
     result_list = []
+    skipped_any = False
     for _, row in df_input.iterrows():
         code = row["stock_code"]
         strategy_id = row["strategy"]
@@ -51,10 +96,24 @@ def main():
         full_df = runner.ds.load_cached_data(code)
         if full_df is None or full_df.empty:
             print(f"Symbol {code} has no cached data, skipping")
+            skipped_any = True
+            continue
+
+        windows = rolling_slice(
+            full_df,
+            start_year=start_year,
+            train_years=train_years,
+            test_years=test_years,
+            min_train_bars=min_train_bars,
+            min_test_bars=min_test_bars,
+        )
+        if len(windows) == 0:
+            _print_no_windows_help(code, cfg, start_date, end_date)
+            skipped_any = True
             continue
 
         test_rate_list = []
-        for _train_df, test_df in rolling_slice(full_df):
+        for _train_df, test_df in windows:
             test_rate = runner.profit_rate(runner.run(test_df, strategy_id, param))
             test_rate_list.append(test_rate)
         if len(test_rate_list) == 0:
@@ -76,6 +135,8 @@ def main():
     if not res_df.empty:
         res_df = res_df[res_df["valid"] == 1]
     res_df.to_csv(ROLLING_CSV, index=False, encoding="utf8")
+    if res_df.empty and skipped_any:
+        print("[ERROR] Rolling window verification produced no valid parameters. All symbols were skipped due to insufficient data. See remediation hints above and adjust config.yaml.")
     print("Rolling window stability check complete")
 
 
