@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 OPT_DIR = BASE_DIR / "opt_pipeline"
 sys.path.insert(0, str(OPT_DIR))
 from common import resolve_target_codes  # noqa: E402
+from stock_screening import screen_trendable_stocks  # noqa: E402
 
 
 def run_step(name, cwd, cmd):
@@ -62,11 +63,41 @@ def main():
         action="store_true",
         help="Run all stocks in config.yaml (default: regression stocks only)",
     )
+    parser.add_argument(
+        "--screen",
+        action="store_true",
+        help="Pre-filter the target pool by trendability (stock_screening.py) "
+        "and only run the pipeline on passing symbols. Reads local cache only.",
+    )
     args = parser.parse_args()
 
     with open(BASE_DIR / "config.yaml", "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     target_codes = resolve_target_codes(args, cfg)
+
+    # ---- Pre-filter: trendability screening ----
+    # The quadruple-filter trend strategy only suits stocks with medium-long
+    # term bull trends; optimizing on box-oscillating names (e.g. 000725)
+    # yields fragile fits. When --screen is set, replace the target pool with
+    # symbols that pass the trendability thresholds in config.yaml.
+    if args.screen:
+        from data_source import DataSource
+
+        thresholds = cfg.get("stock_screening", {})
+        screen_df = screen_trendable_stocks(DataSource(), target_codes, thresholds)
+        screen_df.to_csv(BASE_DIR / "output" / "stock_screening.csv", index=False)
+        passed = screen_df[screen_df["passed"]]["stock_code"].astype(str).tolist()
+        failed = screen_df[~screen_df["passed"]][["stock_code", "fail_reason"]]
+        logger.info(f"Trendability screening: {len(passed)}/{len(target_codes)} symbols passed")
+        if len(failed) > 0:
+            logger.info("Rejected symbols:")
+            for _, row in failed.iterrows():
+                logger.info(f"  {row['stock_code']}: {row['fail_reason']}")
+        if not passed:
+            logger.error("No symbols passed trendability screening; aborting.")
+            sys.exit(1)
+        target_codes = passed
+
     codes_csv = ",".join(target_codes)
 
     logger.info("==== SkyQuant full pipeline started ====")

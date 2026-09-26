@@ -21,6 +21,12 @@ python run_all.py
 python run_all.py --all-stocks         # 手动触发全量标的池
 python run_all.py --skip-data          # 缓存加速模式
 python run_all.py --stock-list 000725,600519   # 仅运行指定股票（逗号分隔）
+python run_all.py --screen             # 先做趋势性筛选，只对通过的标的跑流水线
+python run_all.py --all-stocks --screen  # 全量标的池 + 趋势性前置过滤
+
+# 单独跑趋势性筛选（只读本地缓存，输出 output/stock_screening.csv）
+python stock_screening.py
+python stock_screening.py --stock-list 000725,600519
 
 # 每日信号生成（收盘后运行，输出买卖信号与次日操作建议）
 python daily_signal.py
@@ -41,12 +47,35 @@ python main.py --stock-list 000725 --strategy trend_follow  # 仅回测指定股
 - `main.py`/`daily_signal.py`/`manual_trade_review.py`：不传时用 config.yaml 全部标的
 - 五个寻优阶段脚本（param_optimize/out_sample/rolling/aggregate/write_config）均支持 `--stock-list`；阶段 CSV 经 `common.write_stage_csv` 按标的合并写——重跑某标的只替换该标的的行，其余标的行保留
 - `run_all.py` 结构：批量拉数据 → 按标的循环跑寻优链 5 阶段（单标的闭环后再下一个）→ 最后批量回测 + 手工复盘
+- `run_all.py --screen`：在拉数据后、寻优前对目标集做趋势性筛选，只把通过筛选的标的送入寻优；筛选报告写 `output/stock_screening.csv`
+
+### stock_screening.py — 标的趋势性筛选
+
+**设计动机**：四重趋势过滤策略只适合有中长期多头趋势的标的；在 000725 这类长期宽幅震荡股上硬调参数会得到脆弱拟合。筛选层在寻优前剔除震荡股。
+
+**指标**（全部基于本地缓存行情，只读不调 API，全部通过才入选；阈值在 config.yaml `stock_screening`）：
+
+| 指标 | 默认阈值 | 含义 |
+|------|----------|------|
+| `adx_mean` | ≥ 18 | Wilder ADX(14) 均值，趋势强度 |
+| `trend_ratio` | ≥ 0.30 | ADX≥25 的强趋势交易日占比 |
+| `bull_alignment` | ≥ 0.35 | EMA60 > EMA120（多头结构）占比 |
+| `ma_crossings_year` | ≤ 6 | EMA60/EMA120 年交叉次数，越低越少 whipsaw |
+| `efficiency` | ≥ 0.04 | Kaufman 效率比 = 净涨跌/路径长度，越高趋势越干净 |
+| `price_range` | ≥ 0.40 | (期间最高-最低)/均价，排除压缩箱体 |
+| `max_bull_streak` | ≥ 150 | 最长连续 EMA60>EMA120 天数（中长期趋势波）；000725 仅 119 天被剔除 |
+
+**用法**：
+- 独立：`python stock_screening.py`（全量）/ `--stock-list 000725,600519`
+- 流水线：`python run_all.py --screen` 或 `--all-stocks --screen`
+- ADX 用 Wilder 平滑手动实现（无外部 ta 库依赖）
 
 ## 文件清单
 
 | 文件 | 职责 |
 |------|------|
-| run_all.py | 全流水线调度入口，日志管理，异常终止 |
+| run_all.py | 全流水线调度入口，日志管理，异常终止（支持 --screen 趋势性前置过滤） |
+| stock_screening.py | 标的趋势性筛选：ADX/均线趋势效率等指标过滤长期震荡股，输出 output/stock_screening.csv |
 | main.py | 回测主引擎：加载配置、遍历标的、执行回测、输出指标与图表 |
 | daily_signal.py | 每日信号生成：运行策略、输出买卖/持有信号与操作建议 |
 | data_source.py | Tushare 行情拉取、增量更新、本地缓存、AStockData feed |

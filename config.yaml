@@ -14,6 +14,19 @@ opt_pipeline:
   rolling_test_years: 1
   rolling_min_train_bars: 200
   rolling_min_test_bars: 100
+# Stock trendability screening (run_all.py --screen): filter out long-term
+# range-oscillating stocks before the trend-following pipeline. A stock passes
+# only when ALL thresholds are satisfied. See stock_screening.py for metric
+# definitions.
+stock_screening:
+  adx_period: 14
+  min_adx_mean: 18.0
+  min_trend_ratio: 0.30
+  min_bull_alignment: 0.35
+  max_ma_crossings_year: 6.0
+  min_efficiency: 0.04
+  min_price_range: 0.40
+  min_max_bull_streak: 150
 stock_list:
 - code: '601606'
   name: 长城军工
@@ -323,3 +336,14 @@ strategy_params:
       trail_atr_multiple: 1.5
       max_risk_ratio: 0.02
       momentum_period: 20
+    trend_follow:
+      trail_atr_multiple: 2.0
+      min_volatility_ratio: 0.008
+      max_risk_ratio: 0.025
+      trail_tighten_profit_multiple: 2.0
+      trail_tight_atr_multiple: 0.8
+      macd_fast: 10
+      macd_slow: 21
+      macd_signal: 7
+      adx_min: 20.0
+      max_loss_stop_ratio: 0.2
