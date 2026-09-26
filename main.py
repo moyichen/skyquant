@@ -26,7 +26,7 @@ PLOT_OUT = OUTPUT_DIR / "plots"
 METRICS_SUMMARY = OUTPUT_DIR / "metrics_summary.csv"
 TRADE_CSV = BASE_DIR / "manual_trades.csv"
 
-DEFAULT_STRATEGY = "maatr_base"
+DEFAULT_STRATEGY = "trend_follow"
 
 # Analyzers registered on every Cerebro; results surface in the HTML report.
 ANALYZER_NAMES = ("returns", "sharpe", "drawdown", "tradeanalyzer", "sqn")

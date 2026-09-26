@@ -1,12 +1,17 @@
 # Out-of-sample verification: backtest grid-selected parameters on train/test sets
 # separately to filter out overfitted parameters
+import argparse
+
 import pandas as pd
 from common import (
     OUT_SAMPLE_CSV,
     PARAM_GRID_CSV,
     BacktestRunner,
     extract_params,
+    parse_code_list,
     read_stage_csv,
+    resolve_maxcpu,
+    write_stage_csv,
 )
 
 # Non-strategy-parameter columns in the grid result CSV
@@ -40,6 +45,22 @@ def split_train_test(df, train_end):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Out-of-sample overfit verification")
+    parser.add_argument(
+        "--stock-list",
+        type=str,
+        default=None,
+        help="Comma-separated stock codes to verify (default: all rows in the grid CSV)",
+    )
+    parser.add_argument(
+        "--maxcpu",
+        type=int,
+        default=0,
+        help="Number of worker processes for train/test backtests (0 or -1 for all CPUs)",
+    )
+    args = parser.parse_args()
+    maxcpu = resolve_maxcpu(args.maxcpu)
+
     runner = BacktestRunner()
     cfg = runner.ds.cfg.get("opt_pipeline", {})
     train_end = cfg.get("out_sample_train_end", "2024-12-31")
@@ -48,13 +69,19 @@ def main():
     end_date = runner.ds.end_date
 
     grid_df = read_stage_csv(PARAM_GRID_CSV)
+    if args.stock_list:
+        wanted = set(parse_code_list(args.stock_list))
+        grid_df = grid_df[grid_df["stock_code"].astype(str).isin(wanted)]
+    # Per-symbol mode: replace rows for the requested symbols even when the grid
+    # CSV has no rows for them (stale rows must not survive). Batch mode: rewrite.
+    touched_codes = parse_code_list(args.stock_list) if args.stock_list else None
+
     verify_result = []
     skipped_any = False
-    for _, row in grid_df.iterrows():
-        code = row["stock_code"]
-        strategy_id = row["strategy"]
-        param = extract_params(row, NON_PARAM_COLS)
-
+    # Group rows by symbol: train/test slices are identical per symbol, so cache
+    # and split once, then dispatch all (strategy, params) jobs to one Pool.
+    for code in grid_df["stock_code"].astype(str).unique():
+        group = grid_df[grid_df["stock_code"].astype(str) == code]
         cache_df = runner.ds.load_cached_data(code)
         if cache_df is None or cache_df.empty:
             print(f"Symbol {code} has no cached data, skipping")
@@ -70,24 +97,28 @@ def main():
             skipped_any = True
             continue
 
-        train_rate = runner.profit_rate(runner.run(df_train, strategy_id, param))
-        test_rate = runner.profit_rate(runner.run(df_test, strategy_id, param))
-        overfit_flag = 1 if (train_rate - test_rate) > overfit_threshold else 0
-        verify_result.append(
-            {
-                "stock_code": code,
-                "strategy": strategy_id,
-                **param,
-                "train_profit_rate": round(train_rate, 4),
-                "test_profit_rate": round(test_rate, 4),
-                "overfit": overfit_flag,
-            }
-        )
+        jobs = [(row["strategy"], extract_params(row, NON_PARAM_COLS)) for _, row in group.iterrows()]
+        print(f"Symbol {code}: out-of-sample verify {len(jobs)} combos on {maxcpu} workers")
+        pairs = runner.run_train_test_batch(df_train, df_test, jobs, maxcpu=maxcpu)
+        for (strategy_id, param), (train_final, test_final) in zip(jobs, pairs):
+            train_rate = runner.profit_rate(train_final)
+            test_rate = runner.profit_rate(test_final)
+            overfit_flag = 1 if (train_rate - test_rate) > overfit_threshold else 0
+            verify_result.append(
+                {
+                    "stock_code": code,
+                    "strategy": strategy_id,
+                    **param,
+                    "train_profit_rate": round(train_rate, 4),
+                    "test_profit_rate": round(test_rate, 4),
+                    "overfit": overfit_flag,
+                }
+            )
 
     verify_df = pd.DataFrame(verify_result)
     if not verify_df.empty:
         verify_df = verify_df[verify_df["overfit"] == 0]
-    verify_df.to_csv(OUT_SAMPLE_CSV, index=False, encoding="utf8")
+    write_stage_csv(OUT_SAMPLE_CSV, verify_df, touched_codes)
     if verify_df.empty and skipped_any:
         print("[ERROR] Out-of-sample verification produced no valid parameters. All symbols were skipped due to insufficient data. See remediation hints above and adjust config.yaml.")
     print(f"Out-of-sample verification complete, overfitted parameters removed, output:{OUT_SAMPLE_CSV}")

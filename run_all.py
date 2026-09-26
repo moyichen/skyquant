@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 # ========== Logging Configuration ==========
 BASE_DIR = Path(__file__).parent.resolve()
 LOG_FILE = BASE_DIR / "output" / "run.log"
@@ -21,6 +23,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 OPT_DIR = BASE_DIR / "opt_pipeline"
+sys.path.insert(0, str(OPT_DIR))
+from common import resolve_target_codes  # noqa: E402
 
 
 def run_step(name, cwd, cmd):
@@ -51,19 +55,24 @@ def main():
         "--stock-list",
         type=str,
         default=None,
-        help="Comma-separated stock codes to run (e.g. 000725,600519). Defaults to all stocks in config.yaml.",
+        help="Comma-separated stock codes to run (e.g. 000725,600519). Defaults to regression stocks.",
+    )
+    parser.add_argument(
+        "--all-stocks",
+        action="store_true",
+        help="Run all stocks in config.yaml (default: regression stocks only)",
     )
     args = parser.parse_args()
 
-    stock_list_arg = []
-    if args.stock_list:
-        stock_list_arg = [c.strip() for c in args.stock_list.split(",") if c.strip()]
+    with open(BASE_DIR / "config.yaml", "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    target_codes = resolve_target_codes(args, cfg)
+    codes_csv = ",".join(target_codes)
 
     logger.info("==== SkyQuant full pipeline started ====")
     logger.info(f"Project root: {BASE_DIR}")
     logger.info(f"Log file: {LOG_FILE}")
-    if stock_list_arg:
-        logger.info(f"Stock list (overridden): {stock_list_arg}")
+    logger.info(f"Target symbols ({len(target_codes)}): {codes_csv}")
 
     required_dirs = [
         BASE_DIR / "cache",
@@ -74,60 +83,46 @@ def main():
     for d in required_dirs:
         d.mkdir(exist_ok=True)
 
-    stock_flag = ["--stock-list", args.stock_list] if stock_list_arg else []
-
-    STEPS = []
+    # ---- Step 1: market data fetch (batched, I/O bound) ----
     if not args.skip_data:
-        STEPS.append(
-            (
-                "[1/8] Fetch full market data",
-                BASE_DIR,
-                [sys.executable, "main.py", "--force_refresh", *stock_flag],
-            )
+        run_step(
+            "[Data] Fetch full market data",
+            BASE_DIR,
+            [sys.executable, "main.py", "--force_refresh", "--stock-list", codes_csv],
         )
     else:
         logger.info("👉 --skip-data enabled, skipping market data fetch, using local cache")
 
-    STEPS += [
-        (
-            "[2/8] Grid parameter optimization",
-            OPT_DIR,
-            [sys.executable, "param_optimize.py", *stock_flag],
-        ),
-        (
-            "[3/8] Out-of-sample validation, filter overfitted parameters",
-            OPT_DIR,
-            [sys.executable, "out_sample_verify.py"],
-        ),
-        (
-            "[4/8] Rolling window stability validation",
-            OPT_DIR,
-            [sys.executable, "rolling_window_verify.py"],
-        ),
-        (
-            "[5/8] Aggregate optimal parameters",
-            OPT_DIR,
-            [sys.executable, "aggregate_best_param.py"],
-        ),
-        (
-            "[6/8] Write optimal parameters to config.yaml",
-            OPT_DIR,
-            [sys.executable, "write_param_to_config.py"],
-        ),
-        (
-            "[7/8] Batch backtest with updated parameters",
-            BASE_DIR,
-            [sys.executable, "main.py", *stock_flag],
-        ),
-        (
-            "[8/8] Manual trade review",
-            BASE_DIR,
-            [sys.executable, "manual_trade_review.py", *stock_flag],
-        ),
+    # ---- Steps 2-6: per-symbol optimization loop ----
+    # Each symbol runs the full optimize -> verify -> aggregate -> write-config chain
+    # before moving to the next symbol, so a per-symbol rerun never waits for the
+    # whole pool and stage CSVs are merge-written per symbol.
+    OPT_STAGES = [
+        ("Grid parameter optimization", "param_optimize.py"),
+        ("Out-of-sample validation, filter overfitted parameters", "out_sample_verify.py"),
+        ("Rolling window stability validation", "rolling_window_verify.py"),
+        ("Aggregate optimal parameters", "aggregate_best_param.py"),
+        ("Write optimal parameters to config.yaml", "write_param_to_config.py"),
     ]
+    for index, code in enumerate(target_codes, start=1):
+        for stage_name, script in OPT_STAGES:
+            run_step(
+                f"[Symbol {index}/{len(target_codes)}: {code}] {stage_name}",
+                OPT_DIR,
+                [sys.executable, script, "--stock-list", code],
+            )
 
-    for name, cwd, cmd in STEPS:
-        run_step(name, cwd, cmd)
+    # ---- Steps 7-8: final batched backtest & manual trade review ----
+    run_step(
+        "[Final] Batch backtest with updated parameters",
+        BASE_DIR,
+        [sys.executable, "main.py", "--stock-list", codes_csv],
+    )
+    run_step(
+        "[Final] Manual trade review",
+        BASE_DIR,
+        [sys.executable, "manual_trade_review.py", "--stock-list", codes_csv],
+    )
 
     logger.info("\n✅ All pipeline tasks completed!")
     logger.info("Output file locations:")

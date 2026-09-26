@@ -88,7 +88,7 @@ skyquant/
 │   └── daily_signal_*.csv       # 每日信号报告（按日期生成）
 ├── strategy/
 │   ├── __init__.py
-│   ├── maatr_base.py
+│   ├── trend_follow.py
 │   ├── momentum.py
 │   ├── short_reversal.py
 │   ├── boll_ma.py
@@ -104,29 +104,36 @@ skyquant/
 
 ---
 
-## 3\. 流水线执行流程（固定 8 步）
+## 3\. 流水线执行流程（寻优段按标的循环）
 
-**run\_all\.py 严格按顺序执行**
+**run\_all\.py 执行顺序**
 
-1. 全量行情拉取 / 跳过缓存
+1. 全量行情拉取 / 跳过缓存（批量，I/O 密集）
 
-2. 网格参数优化遍历
+2. 对每个目标标的依次执行完整寻优链（单标的闭环后再处理下一个标的）：
+   1. 网格参数优化遍历
+   2. 外样本校验（剔除训练集过拟合）
+   3. 滚动窗口稳定性校验（防止偶然收益）
+   4. 聚合该标的每策略最优稳定参数
+   5. 自动写入 config\.yaml 策略参数（仅触及该标的的条目）
 
-3. 外样本校验（剔除训练集过拟合）
+3. 正式回测、指标计算、绘图（全部标的批量）
 
-4. 滚动窗口稳定性校验（防止偶然收益）
+4. 手工交易复盘匹配与统计（批量）
 
-5. 聚合每标的、每策略最优稳定参数
+**目标标的集合**（寻优/回测/复盘共用同一集合）：
 
-6. 自动写入 config\.yaml 策略参数
+- 默认：回归标的集（`REGRESSION_STOCKS`，5 只，定义在 opt\_pipeline/common\.py）——每次修改参数后的快速迭代门槛
+- `--all-stocks`：手动触发全量标的池
+- `--stock-list`：显式指定子集
 
-7. 正式全量回测、指标计算、绘图
-
-8. 手工交易复盘匹配与统计
+阶段 CSV（param\_optimize\_result / out\_sample\_verify\_result / rolling\_verify / aggregate\_common\_param）按标的合并写：重跑某标的只替换该标的的行，其余标的行保留；不带 `--stock-list`（批量模式）时整体重写。
 
 运行模式：
 
-- `python run_all.py` 完整全量流水线
+- `python run_all.py` 回归标的集流水线（默认）
+
+- `python run_all.py --all-stocks` 完整全量流水线（手动触发）
 
 - `python run_all.py --skip-data`缓存加速流水线
 
@@ -154,26 +161,29 @@ skyquant/
 
 **统一机制（所有策略共享）**：
 
-- **ATR 固定风险仓位**：`size = int(总资产 × max_risk_ratio / (ATR × atr_mult))`，单笔风险不超过总资金的 `max_risk_ratio`。
-- **多层级平仓（优先级从高到低）**：
-  1. **固定止盈**（`profit_multiple` 非 None 时）：价格触及 `entry_price + profit_multiple × ATR` 即平仓。
-  2. **追踪止损 + 动态止盈**（基类自动）：
-     - 基础追踪：`stop = 持仓以来最高价 - atr_mult × ATR`，只上不下（ratchet）。
-     - 动态止盈：浮盈（最高价 − 入场价）达到 `trail_profit_activate × ATR` 后，止损倍数收紧为 `trail_tight_multiple`，锁定利润但不封顶上行。
-  3. **策略专属信号止损**：子类 `_on_exit()` 中定义（如动量转负、均线死叉等）。
+- **全局三重趋势过滤（开仓门控，基类强制执行，子类无法绕过）**：全部通过才调用子类 `_on_entry()` 判断专属信号。
+  1. **均线趋势**：SMA(sma_fast) > SMA(sma_slow)，只做多头排列。
+  2. **MACD 多头**：DIF > 0（零轴上方）且 DIF > DEA（金叉状态），且 DIF 持续上行 `macd_momentum_bars` 根、MACD 柱持续放大（动量增强）。
+  3. **波动率**：ATR/收盘价 > min_volatility_ratio，过滤横盘假突破。
+- **ATR 固定风险仓位**：`size = int(总资产 × max_risk_ratio / (ATR × trail_atr_multiple))`，单笔风险不超过总资金的 `max_risk_ratio`。
+- **纯动态追踪止损（默认唯一出场，无固定止盈）**：
+  - 基础追踪：`stop = 持仓以来最高价 - trail_atr_multiple × ATR`，只上不下（ratchet）。
+  - 动态止盈：浮盈（最高价 − 入场价）达到 `trail_tighten_profit_multiple × ATR` 后，止损倍数收紧为 `trail_tight_atr_multiple`，锁定利润但不封顶上行，全程跟随趋势吃满波段。
+  - 固定止盈 `take_profit_atr_multiple` 默认 None 关闭，仅显式配置时启用（优先级高于追踪止损）。
+- **策略专属信号止损**：子类 `_on_exit()` 中定义（如动量转负、均线死叉等）。
 - **统一输出接口**：`get_equity_dataframe()`、`get_trade_dataframe()`、`get_action_dataframe()`。
 
-**策略清单（开仓 / 专属平仓条件）**：
+**策略清单（专属开仓信号 / 专属平仓条件）**：
 
-| 策略 | 开仓条件 | 专属平仓条件（叠加追踪止损） |
+| 策略 | 专属开仓信号（三重过滤通过后才判断） | 专属平仓条件（叠加追踪止损） |
 |------|----------|------------------------------|
-| maatr_base | SMA(fast) > SMA(slow) 且 ATR/close > atr_min_rel | 无（仅追踪止损/动态止盈） |
+| trend_follow | 无（三重过滤通过即开仓，纯趋势跟随基线策略） | 无（仅追踪止损/动态止盈） |
 | momentum | Momentum(period) > 0 | Momentum < 0 |
-| short_reversal | (preclose−close)/preclose > fall_ratio | 无 |
-| boll_ma | close ≤ 布林下轨 且 close > SMA(60) | close > 布林上轨 |
-| multi_factor | SMA(20) > SMA(60) 且 pctChg > −5 | SMA(20) < SMA(60) |
+| short_reversal | (preclose−close)/preclose > drop_ratio | 无 |
+| boll_ma | close ≤ 布林下轨 | close > 布林上轨 |
+| multi_factor | pctChg > −5 | SMA(20) < SMA(60) |
 
-> 全部 5 个策略（含 maatr_base）均继承 BaseStrategy，追踪止损、动态止盈、固定止盈、ATR 仓位与日志接口由基类统一提供，子类只需实现 `_init_indicators` / `_on_entry` / `_on_exit` 三个钩子。
+> 全部 5 个策略（含 trend_follow）均继承 BaseStrategy，全局三重过滤、追踪止损、动态止盈、ATR 仓位与日志接口由基类统一提供，子类只需实现 `_init_indicators` / `_on_entry` / `_on_exit` 三个钩子。trend_follow 是所有策略的"最低要求基线"。
 
 ### 4.2 main\.py 回测主引擎
 
@@ -233,7 +243,7 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 ### 4\.5 opt\_pipeline 参数优化规范
 
-- param\_optimize：全网格暴力搜索
+- param\_optimize：全网格暴力搜索。目标标的解析优先级 `--stock-list` > `--all-stocks` > 回归标的集（默认），由 `common.resolve_target_codes` 统一实现；不在 config.yaml `stock_list` 中的代码直接报错。
 
 - out\_sample\_verify：剔除训练过拟合（训练/测试拆分）。按 `opt_pipeline.out_sample_train_end` 切分数据为训练段 / 测试段，分别回测，若训练收益率 − 测试收益率 > `opt_pipeline.out_sample_overfit_threshold` 则判为过拟合剔除。当训练段或测试段 K 线数 < 60（SMA60 最小周期下限）时跳过该标的并打印 `[ERROR]` 提示与改进方法。
 
@@ -241,7 +251,9 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 - aggregate\_best\_param：每标的每策略保留一组最优稳定参数
 
-- write\_param\_to\_config：自动落地到 config\.yaml
+- write\_param\_to\_config：自动落地到 config\.yaml（仅更新传入标的的 `strategy_params` 条目，config 其余内容原样保留）
+
+**阶段脚本通用约定**：五个阶段脚本均支持 `--stock-list` 过滤；三个重计算阶段（param\_optimize / out\_sample\_verify / rolling\_window\_verify）另支持 `--maxcpu`（默认 0=全部 CPU），按标的建一次多进程 Pool，行情切片经 Pool initializer 每个 worker 只传一次，回测任务（strategy\_id + params）多进程并行（`--maxcpu 1` 走进程内串行，结果与多进程逐位一致）。阶段 CSV 统一经 `common.write_stage_csv` 写出——带 `--stock-list` 时按标的合并写（替换该标的旧行、保留其他标的行，即使该标的本次无合格行也会清除其旧行），不带时整体重写。
 
 **滚动校验配置项**（config\.yaml 的 `opt_pipeline` 段，均为年度对齐窗口参数）：
 

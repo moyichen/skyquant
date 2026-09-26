@@ -1,51 +1,70 @@
-# Grid parameter optimization: use cerebro.optstrategy for parallel grid search,
-# keeping only profitable parameter combinations
+# Grid parameter optimization: enumerate each strategy's PARAM_GRID with a
+# self-built multiprocessing Pool, keeping only profitable parameter combinations.
+#
+# Default target universe is REGRESSION_STOCKS (fast iteration gate after any
+# strategy/param change); a full-pool run must be triggered explicitly with
+# --all-stocks, or an explicit subset with --stock-list.
 import argparse
 
 import pandas as pd
-from common import PARAM_GRID_CSV, BacktestRunner
+from common import PARAM_GRID_CSV, BacktestRunner, resolve_maxcpu, resolve_target_codes, write_stage_csv
+from strategy import ACTIVE_STRATEGIES
 
 PARAM_GRID = {
-    "maatr_base": {
-        "atr_multiple": [1.6, 1.8, 2.0],
-        "atr_min_rel": [0.008, 0.015, 0.025],
+    "trend_follow": {
+        "trail_atr_multiple": [1.6, 1.8, 2.0],
+        "min_volatility_ratio": [0.008, 0.015, 0.025],
         "max_risk_ratio": [0.015, 0.02, 0.025],
-        "profit_multiple": [2.0, 3.0, 4.0],
-        "trail_profit_activate": [1.0, 1.5, 2.0],
-        "trail_tight_multiple": [0.8, 1.0, 1.2],
+        "trail_tighten_profit_multiple": [1.0, 1.5, 2.0],
+        "trail_tight_atr_multiple": [0.8, 1.0, 1.2],
+        "macd_fast": [10, 12],
+        "macd_slow": [21, 26],
+        "macd_signal": [7, 9],
     },
     "momentum": {
-        "atr_multiple": [1.4, 1.5, 1.7],
+        "trail_atr_multiple": [1.4, 1.5, 1.7],
         "max_risk_ratio": [0.02, 0.025],
         "momentum_period": [18, 20, 22],
-        "profit_multiple": [2.0, 3.0, 4.0],
-        "trail_profit_activate": [1.0, 1.5, 2.0],
-        "trail_tight_multiple": [0.8, 1.0, 1.2],
+        "trail_tighten_profit_multiple": [1.0, 1.5, 2.0],
+        "trail_tight_atr_multiple": [0.8, 1.0, 1.2],
+        "macd_fast": [10, 12],
+        "macd_slow": [21, 26],
+        "macd_signal": [7, 9],
     },
     "short_reversal": {
-        "atr_mult": [1.8, 2.0, 2.2],
+        "trail_atr_multiple": [1.8, 2.0, 2.2],
         "max_risk_ratio": [0.02],
-        "fall_ratio": [0.15, 0.18, 0.2],
-        "profit_multiple": [2.0, 3.0, 4.0],
-        "trail_profit_activate": [1.0, 1.5, 2.0],
-        "trail_tight_multiple": [0.8, 1.0, 1.2],
+        "drop_ratio": [0.15, 0.18, 0.2],
+        "trail_tighten_profit_multiple": [1.0, 1.5, 2.0],
+        "trail_tight_atr_multiple": [0.8, 1.0, 1.2],
+        "macd_fast": [10, 12],
+        "macd_slow": [21, 26],
+        "macd_signal": [7, 9],
     },
     "boll_ma": {
-        "atr_mult": [1.5, 1.6, 1.8],
+        "trail_atr_multiple": [1.5, 1.6, 1.8],
         "max_risk_ratio": [0.02],
         "boll_period": [18, 20, 22],
-        "profit_multiple": [2.0, 3.0, 4.0],
-        "trail_profit_activate": [1.0, 1.5, 2.0],
-        "trail_tight_multiple": [0.8, 1.0, 1.2],
+        "trail_tighten_profit_multiple": [1.0, 1.5, 2.0],
+        "trail_tight_atr_multiple": [0.8, 1.0, 1.2],
+        "macd_fast": [10, 12],
+        "macd_slow": [21, 26],
+        "macd_signal": [7, 9],
     },
     "multi_factor": {
-        "atr_mult": [1.6, 1.7, 1.9],
+        "trail_atr_multiple": [1.6, 1.7, 1.9],
         "max_risk_ratio": [0.018, 0.02],
-        "profit_multiple": [2.0, 3.0, 4.0],
-        "trail_profit_activate": [1.0, 1.5, 2.0],
-        "trail_tight_multiple": [0.8, 1.0, 1.2],
+        "trail_tighten_profit_multiple": [1.0, 1.5, 2.0],
+        "trail_tight_atr_multiple": [0.8, 1.0, 1.2],
+        "macd_fast": [10, 12],
+        "macd_slow": [21, 26],
+        "macd_signal": [7, 9],
     },
 }
+
+# Grid actually optimized: PARAM_GRID filtered by strategy.ACTIVE_STRATEGIES
+# (paused strategies keep their grid definitions above for easy re-enable).
+ACTIVE_PARAM_GRID = {sid: grid for sid, grid in PARAM_GRID.items() if ACTIVE_STRATEGIES is None or sid in ACTIVE_STRATEGIES}
 
 
 def main():
@@ -60,21 +79,19 @@ def main():
         "--stock-list",
         type=str,
         default=None,
-        help="Comma-separated stock codes to run. Defaults to all stocks in config.yaml.",
+        help="Comma-separated stock codes to run. Defaults to regression stocks.",
+    )
+    parser.add_argument(
+        "--all-stocks",
+        action="store_true",
+        help="Optimize all stocks in config.yaml (default: regression stocks only)",
     )
     args = parser.parse_args()
 
-    maxcpu = args.maxcpu
-    if maxcpu <= 0:
-        import multiprocessing
-
-        maxcpu = multiprocessing.cpu_count()
+    maxcpu = resolve_maxcpu(args.maxcpu)
 
     runner = BacktestRunner()
-    valid_codes = [item["code"] for item in runner.ds.cfg["stock_list"]]
-    if args.stock_list:
-        wanted = {c.strip() for c in args.stock_list.split(",") if c.strip()}
-        valid_codes = [c for c in valid_codes if c in wanted]
+    valid_codes = resolve_target_codes(args, runner.ds.cfg)
     # Each symbol's cache is read only once; grid combinations reuse it directly
     cache_map = {code: runner.ds.load_cached_data(code) for code in valid_codes}
 
@@ -84,7 +101,8 @@ def main():
         if df is None or df.empty:
             print(f"Symbol {code} has no cached data, skipping")
             continue
-        for strategy_id, grid in PARAM_GRID.items():
+        for strategy_id, grid in ACTIVE_PARAM_GRID.items():
+            print(f"Symbol {code} strategy {strategy_id}: grid {len(grid)} params on {maxcpu} workers")
             try:
                 results = runner.optimize(df, strategy_id, grid, maxcpu=maxcpu)
             except Exception as e:
@@ -107,8 +125,8 @@ def main():
     res_df = pd.DataFrame(result_rows)
     if not res_df.empty:
         res_df = res_df[res_df["profit_rate"] > 0]
-    res_df.to_csv(PARAM_GRID_CSV, index=False, encoding="utf8")
-    print(f"Grid optimization results written to: {PARAM_GRID_CSV}")
+    write_stage_csv(PARAM_GRID_CSV, res_df, valid_codes)
+    print(f"Grid optimization results written to: {PARAM_GRID_CSV} ({len(res_df)} rows)")
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ import pandas as pd
 
 from comm import AStockCommission
 from data_source import AStockData, DataSource
-from strategy import DEFAULT_STRATEGY_PARAMS, STRATEGY_MAPPING
+from strategy import DEFAULT_STRATEGY_PARAMS, STRATEGY_MAPPING, filter_active_strategies
 
 BASE_DIR = Path(__file__).parent.resolve()
 OUTPUT_DIR = BASE_DIR / "output"
@@ -296,12 +296,13 @@ def main():
         transfer_fee=comm_cfg["transfer_fee"],
     )
 
-    # Build param pool: use optimized params when available, otherwise fall back to defaults
+    # Build param pool: use optimized params when available, otherwise fall back to
+    # defaults; paused strategies are dropped via the active-strategy filter.
     optimized_params = {str(code): p for code, p in cfg["strategy_params"].items()}
     param_pool = {}
     for s in stock_list:
         code = str(s["code"])
-        param_pool[code] = optimized_params.get(code, DEFAULT_STRATEGY_PARAMS)
+        param_pool[code] = filter_active_strategies(optimized_params.get(code, DEFAULT_STRATEGY_PARAMS))
     stock_name_map = {str(s["code"]): s.get("name", s["code"]) for s in stock_list}
 
     holdings = compute_holdings(TRADE_CSV)

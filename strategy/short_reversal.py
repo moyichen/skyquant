@@ -1,27 +1,24 @@
-# 短期反转策略
-# 开仓条件：当日跌幅超过阈值 fall_ratio，即 (昨收-今收)/昨收 > fall_ratio，博反弹
-# 平仓条件（多层级，优先级从高到低）：
-#   1. 固定止盈：profit_multiple 非 None 时，收盘价 >= 入场价 + profit_multiple × ATR
-#   2. 追踪止损 + 动态止盈（基类自动）：跌破 stop_price（持仓最高价 - atr_mult × ATR，只上不下；
-#      浮盈达 trail_profit_activate × ATR 后收紧为 trail_tight_multiple × ATR）
-#   3. 价格继续下跌击穿追踪止损
+# 短期反转策略（继承 BaseStrategy）
+# 开仓条件：全局三重过滤（均线多头 + MACD 多头 + 波动率达标，基类执行）通过，
+#           且策略专属信号当日跌幅超阈值：(昨收-今收)/昨收 > drop_ratio（多头行情中的急跌博反弹）
+# 平仓条件：纯动态追踪止损（基类，含动态止盈收紧）；收盘价跌破 stop_price
 from .base import BaseStrategy
 
 
 class ShortReversalStrategy(BaseStrategy):
     params = (
-        ("atr_mult", 2.0),
-        ("fall_ratio", 0.18),
-        # max_risk_ratio 继承自 BaseStrategy
+        ("trail_atr_multiple", 2.0),
+        ("drop_ratio", 0.18),
+        # 全局过滤与止盈止损参数继承自 BaseStrategy
     )
 
     def _on_entry(self):
-        # 短期跌幅超阈值时开仓博反弹
+        # 全局三重过滤已在基类通过，这里只判断策略专属急跌信号
         drop = (self.data.preclose[0] - self.data.close[0]) / self.data.preclose[0]
-        if drop > self.p.fall_ratio:
-            self._open_position(self.p.atr_mult)
+        if drop > self.p.drop_ratio:
+            self._open_position(self.p.trail_atr_multiple)
 
     def _on_exit(self):
         # 跌破追踪止损时平仓
-        if self.data.close[0] < self.stop_price:
+        if self.data.close[0] <= self.stop_price:
             self._close_position()

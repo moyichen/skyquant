@@ -2,13 +2,18 @@
 # rolling train/test windows. All window parameters are configurable in
 # config.yaml (opt_pipeline section); defaults preserve the original
 # 4-year-train / 1-year-test behaviour starting from 2020.
+import argparse
+
 import pandas as pd
 from common import (
     OUT_SAMPLE_CSV,
     ROLLING_CSV,
     BacktestRunner,
     extract_params,
+    parse_code_list,
     read_stage_csv,
+    resolve_maxcpu,
+    write_stage_csv,
 )
 
 # Non-strategy-parameter columns in the out-of-sample result CSV
@@ -75,6 +80,22 @@ def _print_no_windows_help(code, cfg, start_date, end_date):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Rolling window stability verification")
+    parser.add_argument(
+        "--stock-list",
+        type=str,
+        default=None,
+        help="Comma-separated stock codes to verify (default: all rows in the out-of-sample CSV)",
+    )
+    parser.add_argument(
+        "--maxcpu",
+        type=int,
+        default=0,
+        help="Number of worker processes for rolling-window backtests (0 or -1 for all CPUs)",
+    )
+    args = parser.parse_args()
+    maxcpu = resolve_maxcpu(args.maxcpu)
+
     runner = BacktestRunner()
     cfg = runner.ds.cfg.get("opt_pipeline", {})
     start_year = int(cfg.get("rolling_start_year", 2020))
@@ -86,13 +107,17 @@ def main():
     end_date = runner.ds.end_date
 
     df_input = read_stage_csv(OUT_SAMPLE_CSV)
+    if args.stock_list:
+        wanted = set(parse_code_list(args.stock_list))
+        df_input = df_input[df_input["stock_code"].astype(str).isin(wanted)]
+    touched_codes = parse_code_list(args.stock_list) if args.stock_list else None
+
     result_list = []
     skipped_any = False
-    for _, row in df_input.iterrows():
-        code = row["stock_code"]
-        strategy_id = row["strategy"]
-        param = extract_params(row, NON_PARAM_COLS)
-
+    # Group rows by symbol: rolling windows are identical per symbol, so build
+    # them once and dispatch all (strategy, params) jobs x windows to one Pool.
+    for code in df_input["stock_code"].astype(str).unique():
+        group = df_input[df_input["stock_code"].astype(str) == code]
         full_df = runner.ds.load_cached_data(code)
         if full_df is None or full_df.empty:
             print(f"Symbol {code} has no cached data, skipping")
@@ -112,29 +137,28 @@ def main():
             skipped_any = True
             continue
 
-        test_rate_list = []
-        for _train_df, test_df in windows:
-            test_rate = runner.profit_rate(runner.run(test_df, strategy_id, param))
-            test_rate_list.append(test_rate)
-        if len(test_rate_list) == 0:
-            continue
-
-        avg_test = sum(test_rate_list) / len(test_rate_list)
-        valid = 1 if avg_test > 0 else 0
-        result_list.append(
-            {
-                "stock_code": code,
-                "strategy": strategy_id,
-                **param,
-                "avg_test_profit": round(avg_test, 4),
-                "valid": valid,
-            }
-        )
+        test_dfs = [test_df for _train_df, test_df in windows]
+        jobs = [(row["strategy"], extract_params(row, NON_PARAM_COLS)) for _, row in group.iterrows()]
+        print(f"Symbol {code}: rolling verify {len(jobs)} combos x {len(test_dfs)} windows on {maxcpu} workers")
+        windows_finals = runner.run_rolling_batch(test_dfs, jobs, maxcpu=maxcpu)
+        for (strategy_id, param), finals in zip(jobs, windows_finals):
+            test_rate_list = [runner.profit_rate(final_value) for final_value in finals]
+            avg_test = sum(test_rate_list) / len(test_rate_list)
+            valid = 1 if avg_test > 0 else 0
+            result_list.append(
+                {
+                    "stock_code": code,
+                    "strategy": strategy_id,
+                    **param,
+                    "avg_test_profit": round(avg_test, 4),
+                    "valid": valid,
+                }
+            )
 
     res_df = pd.DataFrame(result_list)
     if not res_df.empty:
         res_df = res_df[res_df["valid"] == 1]
-    res_df.to_csv(ROLLING_CSV, index=False, encoding="utf8")
+    write_stage_csv(ROLLING_CSV, res_df, touched_codes)
     if res_df.empty and skipped_any:
         print("[ERROR] Rolling window verification produced no valid parameters. All symbols were skipped due to insufficient data. See remediation hints above and adjust config.yaml.")
     print("Rolling window stability check complete")
