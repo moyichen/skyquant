@@ -22,9 +22,12 @@ class MomentumStrategy(BaseStrategy):
     def _on_entry(self):
         # 全局三重过滤已在基类通过，这里只判断策略专属动量信号
         if self.mom[0] > 0:
-            self._open_position(self.p.trail_atr_multiple)
+            reason = f"momentum_positive: mom {self.mom[0]:.4f} > 0, close {self.data.close[0]:.2f}"
+            self._open_position(self.p.trail_atr_multiple, reason=reason)
 
     def _on_exit(self):
-        # 跌破追踪止损 或 动量转负 时平仓
-        if self.data.close[0] <= self.stop_price or self.mom[0] < 0:
-            self._close_position()
+        # 跌破追踪止损 或 动量转负 时平仓（拆分判断以记录准确的卖出原因）
+        if self.data.close[0] <= self.stop_price:
+            self._close_position(self._trail_stop_reason())
+        elif self.mom[0] < 0:
+            self._close_position(f"momentum_negative: momentum {self.mom[0]:.4f} < 0")

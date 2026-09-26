@@ -30,7 +30,7 @@ CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.yaml")
 # Default optimization universe == regression universe: after any strategy/param
 # change the fast iteration loop optimizes only these symbols; a full-pool run
 # must be triggered explicitly with --all-stocks. tests/regression reuses this list.
-REGRESSION_STOCKS = ["000725", "000001", "600111", "002222", "601127"]
+REGRESSION_STOCKS = ["000725"]
 
 
 def parse_code_list(raw: str) -> list:

@@ -22,12 +22,12 @@ class BollMAStrategy(BaseStrategy):
     def _on_entry(self):
         # 全局三重过滤已在基类通过（含 close > SMA60），这里只判断布林下轨信号
         if self.data.close[0] <= self.boll.bot[0]:
-            self._open_position(self.p.trail_atr_multiple)
+            reason = f"boll_lower_touch: close {self.data.close[0]:.2f} <= boll_bot {self.boll.bot[0]:.2f}"
+            self._open_position(self.p.trail_atr_multiple, reason=reason)
 
     def _on_exit(self):
-        # 跌破追踪止损 或 突破布林带上轨 时平仓
-        if (
-            self.data.close[0] <= self.stop_price
-            or self.data.close[0] > self.boll.top[0]
-        ):
-            self._close_position()
+        # 跌破追踪止损 或 突破布林带上轨 时平仓（拆分判断以记录准确的卖出原因）
+        if self.data.close[0] <= self.stop_price:
+            self._close_position(self._trail_stop_reason())
+        elif self.data.close[0] > self.boll.top[0]:
+            self._close_position(f"boll_upper_break: close {self.data.close[0]:.2f} > boll_top {self.boll.top[0]:.2f}")

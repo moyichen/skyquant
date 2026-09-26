@@ -20,7 +20,8 @@ class BaseStrategy(bt.Strategy):
     子类只需重写三个钩子：
       - _init_indicators()：初始化策略专属指标（如均线、动量、布林带）
       - _on_entry()：空仓时判断是否开仓（满足条件调用 self._open_position(atr_multiple)）
-      - _on_exit()：持仓时判断是否平仓（满足条件调用 self._close_position()；
+      - _on_exit()：持仓时判断是否平仓（满足条件调用 self._close_position(reason)，
+                    reason 描述卖出逻辑，写入 action_log 与 trade_log 供人工分析；
                     追踪止损与动态止盈由基类 next() 在调用 _on_exit 前自动更新 stop_price）
 
     开仓条件（全局三重趋势过滤，由基类统一执行，子类无法绕过）：
@@ -77,6 +78,13 @@ class BaseStrategy(bt.Strategy):
         # notify_order 记录的实际成交信息
         self.entry_size = None
         self.exit_price = None
+        # 持仓成本跟踪（按实际成交加权），用于买入均价与卖出获利估算
+        self._hold_cost = 0.0
+        self._hold_size = 0
+        # 平仓原因（_close_position 写入，notify_trade 消费到 trade_log）
+        self.exit_reason = None
+        # 待回填成交量的 action_log 索引（决策时记录意图，成交时回填实际量）
+        self._pending_action_index = None
         # 止损 / 止盈价
         self.stop_price = None
         self.take_price = None
@@ -84,6 +92,8 @@ class BaseStrategy(bt.Strategy):
         self.entry_price = None
         self.entry_bar = None
         self.entry_atr_multiple = None
+        # 动态止盈是否已激活（收紧追踪止损），用于卖出原因标注
+        self._trail_tightened = False
         # 子类专属指标
         self._init_indicators()
 
@@ -92,12 +102,21 @@ class BaseStrategy(bt.Strategy):
 
     # ===================== 订单与交易回调 =====================
     def notify_order(self, order):
-        """记录实际成交：买入数量 / 卖出价格，供 notify_trade 生成交易记录"""
+        """记录实际成交：买入数量 / 卖出价格，供 notify_trade 生成交易记录；
+        同时把该笔订单的实际成交量回填到对应 action_log 行（exec_size）"""
         if order.status == order.Completed:
             if order.isbuy():
                 self.entry_size = order.executed.size
+                self._hold_cost += order.executed.price * order.executed.size
+                self._hold_size += order.executed.size
             else:
                 self.exit_price = order.executed.price
+                self._hold_cost = 0.0
+                self._hold_size = 0
+            # 回填本次实际成交量（决策时的 size 是意图量，现金不足时可能未成交）
+            if self._pending_action_index is not None:
+                self.action_log[self._pending_action_index]["exec_size"] = order.executed.size
+                self._pending_action_index = None
 
     def notify_trade(self, trade):
         """持仓平仓时生成标准交易记录"""
@@ -118,10 +137,12 @@ class BaseStrategy(bt.Strategy):
                     "profit_loss": trade.pnl,
                     "profit_loss_net": trade.pnlcomm,
                     "profit_rate": profit_rate,
+                    "exit_reason": self.exit_reason,
                 }
             )
             self.entry_size = None
             self.exit_price = None
+            self.exit_reason = None
         except Exception as e:
             print(f"Trade record parsing error: {e}, trade={trade}")
 
@@ -138,7 +159,7 @@ class BaseStrategy(bt.Strategy):
         risk_cap = self.broker.getvalue() * self.p.max_risk_ratio
         return int(risk_cap / risk_per_share)
 
-    def _open_position(self, atr_multiple):
+    def _open_position(self, atr_multiple, reason=""):
         """开仓：计算仓位 → 买入 → 设置初始止损与固定止盈 → 记录入场信息"""
         size = self._position_size(atr_multiple)
         if size > 0:
@@ -153,31 +174,56 @@ class BaseStrategy(bt.Strategy):
                 self.take_price = self.entry_price + atr_val * self.p.take_profit_atr_multiple
             else:
                 self.take_price = None
+            # 预计持仓均价（已有持仓按实际成交加权 + 本次按决策价估算）
+            price = self.data.close[0]
+            total_size = self._hold_size + size
+            avg_cost = (self._hold_cost + price * size) / total_size if total_size > 0 else price
             self.action_log.append(
                 {
                     "date": self.data.datetime.date(0),
                     "side": "BUY",
-                    "price": self.data.close[0],
+                    "price": price,
                     "size": size,
+                    "reason": reason,
+                    "avg_cost": round(avg_cost, 4),
                 }
             )
+            self._pending_action_index = len(self.action_log) - 1
 
-    def _close_position(self):
-        """平仓并重置所有持仓状态"""
+    def _close_position(self, reason=""):
+        """平仓并重置所有持仓状态；reason 记录卖出逻辑，供 action_log/trade_log 人工分析"""
         self.close()
+        price = self.data.close[0]
+        size = self.position.size
+        # 卖出获利估算（基于实际成交加权均价，未扣费用；精确盈亏见 trade_log）
+        avg_cost = self._hold_cost / self._hold_size if self._hold_size > 0 else None
+        profit = round((price - avg_cost) * size, 2) if avg_cost else None
+        profit_rate = round((price - avg_cost) / avg_cost, 4) if avg_cost else None
         self.action_log.append(
             {
                 "date": self.data.datetime.date(0),
                 "side": "SELL",
-                "price": self.data.close[0],
-                "size": self.position.size,
+                "price": price,
+                "size": size,
+                "reason": reason,
+                "avg_cost": round(avg_cost, 4) if avg_cost else None,
+                "profit": profit,
+                "profit_rate": profit_rate,
             }
         )
+        self._pending_action_index = len(self.action_log) - 1
+        self.exit_reason = reason
         self.stop_price = None
         self.take_price = None
         self.entry_price = None
         self.entry_bar = None
         self.entry_atr_multiple = None
+        self._trail_tightened = False
+
+    def _trail_stop_reason(self):
+        """生成追踪止损卖出原因（含是否已动态收紧），供子类 _on_exit 使用"""
+        tag = "trail_stop_tightened" if self._trail_tightened else "trail_stop"
+        return f"{tag}: close {self.data.close[0]:.2f} <= stop {self.stop_price:.2f}"
 
     # ===================== 主循环（模板方法） =====================
     def next(self):
@@ -190,7 +236,7 @@ class BaseStrategy(bt.Strategy):
             return
         # 固定止盈：显式配置（非 None）且收盘价触及时立即平仓（默认关闭，纯追踪止损）
         if self.take_price is not None and self.data.close[0] >= self.take_price:
-            self._close_position()
+            self._close_position(f"take_profit: close {self.data.close[0]:.2f} >= take_price {self.take_price:.2f}")
             return
         # 追踪止损 + 动态止盈：更新 stop_price（只上不下），供子类 _on_exit 检查
         self._update_trailing_stop()
@@ -246,6 +292,8 @@ class BaseStrategy(bt.Strategy):
             profit_atr_multiple = (highest_since_entry - self.entry_price) / atr_val
             if profit_atr_multiple >= self.p.trail_tighten_profit_multiple:
                 tight_stop = highest_since_entry - self.p.trail_tight_atr_multiple * atr_val
+                if tight_stop > candidate_stop:
+                    self._trail_tightened = True
                 candidate_stop = max(candidate_stop, tight_stop)
         # 只上不下（ratchet）
         if candidate_stop > self.stop_price:

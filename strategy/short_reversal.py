@@ -16,9 +16,10 @@ class ShortReversalStrategy(BaseStrategy):
         # 全局三重过滤已在基类通过，这里只判断策略专属急跌信号
         drop = (self.data.preclose[0] - self.data.close[0]) / self.data.preclose[0]
         if drop > self.p.drop_ratio:
-            self._open_position(self.p.trail_atr_multiple)
+            reason = f"short_reversal: drop {drop:.4f} > drop_ratio {self.p.drop_ratio}, close {self.data.close[0]:.2f}"
+            self._open_position(self.p.trail_atr_multiple, reason=reason)
 
     def _on_exit(self):
         # 跌破追踪止损时平仓
         if self.data.close[0] <= self.stop_price:
-            self._close_position()
+            self._close_position(self._trail_stop_reason())

@@ -106,6 +106,7 @@ def classify_signal(action_df: pd.DataFrame, last_bar_date) -> dict:
             "last_signal_date": None,
             "last_signal_side": None,
             "last_signal_price": None,
+            "last_signal_reason": None,
             "strategy_in_position": False,
             "strategy_action": "WAIT",
         }
@@ -117,10 +118,12 @@ def classify_signal(action_df: pd.DataFrame, last_bar_date) -> dict:
         action = last_row["side"]
     else:
         action = "HOLD" if in_position else "WAIT"
+    reason = last_row["reason"] if "reason" in action_df.columns else None
     return {
         "last_signal_date": last_row["date"],
         "last_signal_side": last_row["side"],
         "last_signal_price": last_row["price"],
+        "last_signal_reason": reason if pd.notna(reason) else None,
         "strategy_in_position": in_position,
         "strategy_action": action,
     }
@@ -191,6 +194,7 @@ def build_report_rows(
                     "last_signal_date": signal["last_signal_date"],
                     "last_signal_side": signal["last_signal_side"],
                     "last_signal_price": signal["last_signal_price"],
+                    "last_signal_reason": signal["last_signal_reason"],
                     "strategy_in_position": signal["strategy_in_position"],
                     "strategy_action": signal["strategy_action"],
                     "currently_held": held,
@@ -210,11 +214,12 @@ def build_report_rows(
                 "strategy_id": "CONSENSUS",
                 "last_bar_date": last_bar_date,
                 "last_signal_date": None,
-                "last_signal_side": None,
-                "last_signal_price": None,
-                "strategy_in_position": None,
-                "strategy_action": None,
-                "currently_held": held,
+                    "last_signal_side": None,
+                    "last_signal_price": None,
+                    "last_signal_reason": None,
+                    "strategy_in_position": None,
+                    "strategy_action": None,
+                    "currently_held": held,
                 "holding_size": holding_info["size"],
                 "avg_cost": round(holding_info["avg_cost"], 4),
                 "consensus": consensus,

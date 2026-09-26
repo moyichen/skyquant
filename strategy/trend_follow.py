@@ -21,9 +21,10 @@ class TrendFollowStrategy(BaseStrategy):
 
     def _on_entry(self):
         # 全局三重过滤已在基类通过，这里无条件开仓（纯趋势跟随）
-        self._open_position(self.p.trail_atr_multiple)
+        reason = f"trend_follow: triple_filter_passed, close {self.data.close[0]:.2f}"
+        self._open_position(self.p.trail_atr_multiple, reason=reason)
 
     def _on_exit(self):
         # 无策略专属出场信号，仅检查基类维护的追踪止损（含动态止盈收紧）
         if self.data.close[0] <= self.stop_price:
-            self._close_position()
+            self._close_position(self._trail_stop_reason())

@@ -21,9 +21,12 @@ class MultiFactorStrategy(BaseStrategy):
     def _on_entry(self):
         # 全局三重过滤已在基类通过（含均线多头），这里只判断跌幅过滤
         if self.data.pctChg[0] > -5:
-            self._open_position(self.p.trail_atr_multiple)
+            reason = f"multi_factor: pctChg {self.data.pctChg[0]:.2f} > -5, close {self.data.close[0]:.2f}"
+            self._open_position(self.p.trail_atr_multiple, reason=reason)
 
     def _on_exit(self):
-        # 跌破追踪止损 或 均线死叉 时平仓
-        if self.data.close[0] <= self.stop_price or self.ma20[0] < self.ma60[0]:
-            self._close_position()
+        # 跌破追踪止损 或 均线死叉 时平仓（拆分判断以记录准确的卖出原因）
+        if self.data.close[0] <= self.stop_price:
+            self._close_position(self._trail_stop_reason())
+        elif self.ma20[0] < self.ma60[0]:
+            self._close_position(f"sma_death_cross: ma20 {self.ma20[0]:.2f} < ma60 {self.ma60[0]:.2f}")

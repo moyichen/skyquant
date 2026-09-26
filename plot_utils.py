@@ -157,6 +157,8 @@ def _build_trade_table(trades_df: pd.DataFrame) -> Optional[DataTable]:
             formatter=NumberFormatter(format="0.00"),
         ),
     ]
+    if "exit_reason" in df.columns:
+        columns.append(TableColumn(field="exit_reason", title="Exit Reason"))
     return DataTable(
         source=source,
         columns=columns,
@@ -221,14 +223,44 @@ def _build_action_table_html(action_df: Optional[pd.DataFrame]) -> str:
 
     df = action_df.copy()
     df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+    has_reason = "reason" in df.columns
+    has_avg_cost = "avg_cost" in df.columns
+    has_profit = "profit" in df.columns
+    has_exec_size = "exec_size" in df.columns
+    if has_reason:
+        df["reason"] = df["reason"].fillna("")
+    if has_avg_cost:
+        df["avg_cost"] = df["avg_cost"].apply(lambda v: "" if pd.isna(v) else f"{v:.2f}")
+    if has_exec_size:
+        df["exec_size"] = df["exec_size"].apply(lambda v: "" if pd.isna(v) else f"{abs(int(v))}")
+    if has_profit:
+        df["_profit_rate"] = df["profit_rate"].apply(lambda v: "" if pd.isna(v) else f"{v:+.2%}")
+        df["profit"] = df["profit"].apply(lambda v: "" if pd.isna(v) else f"{v:+,.0f}")
     rows = []
     for _, r in df.iterrows():
         side = str(r.get("side", ""))
         side_class = "side-buy" if side == "BUY" else "side-sell" if side == "SELL" else ""
         price = r.get("price", "")
         size = r.get("size", "")
-        rows.append(f"<tr><td>{r['date']}</td><td class='{side_class}'>{side}</td><td>{price}</td><td>{size}</td></tr>")
-    return "<table class='data-table'><thead><tr><th>Date</th><th>Side</th><th>Price</th><th>Size</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+        reason_cell = f"<td>{r.get('reason', '')}</td>" if has_reason else ""
+        avg_cost_cell = f"<td>{r.get('avg_cost', '')}</td>" if has_avg_cost else ""
+        exec_size_cell = f"<td>{r.get('exec_size', '')}</td>" if has_exec_size else ""
+        if has_profit:
+            profit_txt = f"{r.get('profit', '')} ({r.get('_profit_rate', '')})" if r.get("profit") != "" else ""
+            profit_cell = f"<td>{profit_txt}</td>"
+        else:
+            profit_cell = ""
+        rows.append(f"<tr><td>{r['date']}</td><td class='{side_class}'>{side}</td><td>{price}</td><td>{size}</td>{exec_size_cell}{avg_cost_cell}{profit_cell}{reason_cell}</tr>")
+    headers = "<th>Date</th><th>Side</th><th>Price</th><th>Size</th>"
+    if has_exec_size:
+        headers += "<th>Exec Size</th>"
+    if has_avg_cost:
+        headers += "<th>Avg Cost</th>"
+    if has_profit:
+        headers += "<th>Profit (est)</th>"
+    if has_reason:
+        headers += "<th>Reason</th>"
+    return f"<table class='data-table'><thead><tr>{headers}</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
 
 
 def _build_analyzer_table_html(analyzer_results: Dict[str, Any]) -> str:
@@ -472,7 +504,21 @@ def render_interactive_chart(strategy, out_dir, code, strategy_name):
         raise RuntimeError("btplotting is not installed; run `pip install btplotting` to enable interactive charts") from exc
     os.makedirs(out_dir, exist_ok=True)
     html_path = os.path.join(out_dir, f"{code}_{strategy_name}_interactive.html")
-    plotter = plotter_cls(filename=html_path, output_mode="save")
+    # Extra kwargs are applied onto the scheme (see BacktraderPlotting.__init__):
+    # style="candle" renders solid-filled candlesticks instead of a close-price line
+    # (btplotting draws the candle body as a filled vbar, so bodies are solid).
+    # Classic A-share colors: pure red for up bars, pure green for down bars.
+    plotter = plotter_cls(
+        filename=html_path,
+        output_mode="save",
+        style="candle",
+        barup="#FF0000",
+        bardown="#00A800",
+        barup_wick="#FF0000",
+        bardown_wick="#00A800",
+        barup_outline="#FF0000",
+        bardown_outline="#00A800",
+    )
     # btplotting reads the live analyzer results for its Analyzers tab. Replace
     # backtrader's MAXINT empty-group sentinels up front so they are rendered as
     # blank cells instead of 2**63-1 integers that bokeh refuses to serialize
