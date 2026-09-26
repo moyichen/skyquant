@@ -152,16 +152,22 @@ class BaseStrategy(bt.Strategy):
         if order.status in [order.Submitted, order.Accepted, order.Partial]:
             return
         exec_dt = bt.num2date(order.executed.dt).date() if getattr(order.executed, "dt", None) else None
+        status_name = order.getstatusname(order.status)
         self._order_events.append(
             {
                 "ref": order.ref,
-                "status_name": order.getstatusname(order.status),
+                "status_name": status_name,
                 "is_buy": order.isbuy(),
                 "exec_price": order.executed.price,
                 "exec_size": abs(int(order.executed.size)),
                 "exec_dt": exec_dt,
             }
         )
+        # 卖出成交：立即记录实际成交价。notify_trade（平仓交易记录）与本事件同批
+        # 送达且先于 next() 的 _process_order_events，若不在回调里同步写回，
+        # trade_log 会读到上一笔交易的陈旧 exit_price
+        if not order.isbuy() and status_name == "Completed" and order.executed.price:
+            self.exit_price = order.executed.price
 
     def notify_trade(self, trade):
         """持仓平仓时生成标准交易记录，并把净盈亏回填到最近一笔 SELL action 行"""
@@ -257,12 +263,17 @@ class BaseStrategy(bt.Strategy):
         }
 
     def _close_position(self, reason=""):
-        """挂【次日市价卖单】（卖出不受限价约束）；实际成交与盈亏在成交后回填"""
+        """挂【次日市价卖单】（卖出不受限价约束）；实际成交与盈亏在成交后回填。
+
+        reason 统一附加 _exit_context() 复盘上下文（盈亏标签/均价/峰值/回吐/持仓天数），
+        同时写入 action_log 与 trade_log.exit_reason。
+        """
         if self._pending_order is not None:
             return
         order = self.close()
         trigger_price = self.data.close[0]
         size = self.position.size
+        reason = reason + self._exit_context()
         action_index = len(self.action_log)
         self.action_log.append(self._new_action_row("SELL", trigger_price, size, reason))
         self._pending_order = {"ref": order.ref, "side": "SELL", "action_index": action_index, "atr_multiple": None}
@@ -365,6 +376,31 @@ class BaseStrategy(bt.Strategy):
             )
         tag = "trail_stop_tightened" if self._trail_tightened else "trail_stop"
         return f"{tag}: close {self.data.close[0]:.2f} <= stop {self.stop_price:.2f}"
+
+    def _exit_context(self):
+        """平仓原因的复盘上下文：信号时盈亏标签 + 均价/峰值/回吐/持仓天数。
+
+        返回形如 " | PROFIT +5.6%, avg_cost 4.18, peak 5.10, gaveback -9.4%, held 12d"
+        的后缀字符串；摊低加仓过则附上初始入场价。由 _close_position 统一拼接，
+        所有卖出路径（追踪止损/最差地板/固定止盈/子类信号）自动携带。
+        """
+        close = self.data.close[0]
+        if self._hold_size <= 0 or self.entry_bar is None:
+            return ""
+        avg_cost = self._hold_cost / self._hold_size
+        pnl_rate = close / avg_cost - 1
+        tag = "PROFIT" if pnl_rate >= 0 else "LOSS"
+        parts = [f"{tag} {pnl_rate:+.1%}", f"avg_cost {avg_cost:.2f}"]
+        if self._averaged_down and self.entry_price is not None:
+            parts.append(f"initial_entry {self.entry_price:.2f}")
+        bar_count = (len(self) - 1) - self.entry_bar + 1
+        high_series = self.data.high.get(size=bar_count)
+        peak = max(high_series)
+        parts.append(f"peak {peak:.2f}")
+        if peak > 0:
+            parts.append(f"gaveback {(close / peak - 1) * 100:+.1f}%")
+        parts.append(f"held {(len(self) - 1) - self.entry_bar}d")
+        return " | " + ", ".join(parts)
 
     # ===================== 主循环（模板方法） =====================
     def next(self):
