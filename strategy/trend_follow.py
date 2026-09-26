@@ -1,6 +1,6 @@
 # 纯趋势跟随策略（继承 BaseStrategy）
 # 开仓条件：全局三重趋势过滤全部通过即开仓（无策略专属附加信号）——
-#   1. 均线趋势：SMA(sma_fast) > SMA(sma_slow) 多头排列
+#   1. 均线趋势：EMA(sma_fast) > EMA(sma_slow) 多头排列
 #   2. MACD 多头：DIF > 0 且 DIF > DEA（金叉状态）且 DIF/柱持续放大（动量增强）
 #   3. 波动率：ATR/收盘价 > min_volatility_ratio
 #   三重过滤由基类 _entry_filters_ok 统一执行，本策略 _on_entry 无条件开仓

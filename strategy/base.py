@@ -25,7 +25,7 @@ class BaseStrategy(bt.Strategy):
                     追踪止损与动态止盈由基类 next() 在调用 _on_exit 前自动更新 stop_price）
 
     开仓条件（全局三重趋势过滤，由基类统一执行，子类无法绕过）：
-      1. 均线趋势：SMA(sma_fast) > SMA(sma_slow)，只做多头排列
+      1. 均线趋势：EMA(sma_fast) > EMA(sma_slow)，只做多头排列
       2. MACD 多头：DIF > 0（零轴上方）且 DIF > DEA（金叉状态）
          且 DIF 持续上行 macd_momentum_bars 根、MACD 柱持续放大（动量增强）
       3. 波动率过滤：ATR/收盘价 > min_volatility_ratio，过滤横盘假突破
@@ -63,8 +63,8 @@ class BaseStrategy(bt.Strategy):
         # 通用指标
         self.atr = bt.indicators.ATR(self.data, period=self.p.atr_period)
         # 全局趋势过滤指标（所有策略共用）
-        self.sma_fast = bt.indicators.SMA(self.data.close, period=self.p.sma_fast)
-        self.sma_slow = bt.indicators.SMA(self.data.close, period=self.p.sma_slow)
+        self.sma_fast = bt.indicators.EMA(self.data.close, period=self.p.sma_fast)
+        self.sma_slow = bt.indicators.EMA(self.data.close, period=self.p.sma_slow)
         self.macd = bt.indicators.MACDHisto(
             self.data.close,
             period_me1=self.p.macd_fast,

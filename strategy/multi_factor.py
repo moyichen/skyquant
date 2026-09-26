@@ -15,8 +15,8 @@ class MultiFactorStrategy(BaseStrategy):
 
     def _init_indicators(self):
         # 均线指标保留用于出场判断（死叉）；开仓趋势判断由基类全局过滤承担
-        self.ma20 = bt.indicators.SMA(self.data.close, period=20)
-        self.ma60 = bt.indicators.SMA(self.data.close, period=60)
+        self.ma20 = bt.indicators.EMA(self.data.close, period=20)
+        self.ma60 = bt.indicators.EMA(self.data.close, period=60)
 
     def _on_entry(self):
         # 全局三重过滤已在基类通过（含均线多头），这里只判断跌幅过滤
@@ -29,4 +29,4 @@ class MultiFactorStrategy(BaseStrategy):
         if self.data.close[0] <= self.stop_price:
             self._close_position(self._trail_stop_reason())
         elif self.ma20[0] < self.ma60[0]:
-            self._close_position(f"sma_death_cross: ma20 {self.ma20[0]:.2f} < ma60 {self.ma60[0]:.2f}")
+            self._close_position(f"ema_death_cross: ma20 {self.ma20[0]:.2f} < ma60 {self.ma60[0]:.2f}")

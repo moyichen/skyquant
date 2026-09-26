@@ -71,7 +71,7 @@ strategy_params:
   '000725':
     trend_follow:
       trail_atr_multiple: 1.6
-      min_volatility_ratio: 0.008
+      min_volatility_ratio: 0.025
       max_risk_ratio: 0.025
       trail_tighten_profit_multiple: 1.0
       trail_tight_atr_multiple: 1.0
