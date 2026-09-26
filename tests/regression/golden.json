@@ -16,30 +16,30 @@
     },
     "000725|momentum": {
       "bars": 660,
-      "final_value": 104237.4621,
-      "n_buys": 21,
-      "n_sells": 18,
-      "n_trades": 18,
-      "n_wins": 6,
+      "final_value": 106308.0854,
+      "n_buys": 15,
+      "n_sells": 13,
+      "n_trades": 13,
+      "n_wins": 7,
       "params": {
         "max_risk_ratio": 0.02,
         "momentum_period": 20,
         "trail_atr_multiple": 1.5
       },
-      "total_return": 0.042375
+      "total_return": 0.063081
     },
     "000725|multi_factor": {
       "bars": 660,
-      "final_value": 102488.287,
-      "n_buys": 20,
-      "n_sells": 17,
-      "n_trades": 17,
-      "n_wins": 5,
+      "final_value": 105526.3624,
+      "n_buys": 12,
+      "n_sells": 10,
+      "n_trades": 10,
+      "n_wins": 7,
       "params": {
         "max_risk_ratio": 0.02,
         "trail_atr_multiple": 1.7
       },
-      "total_return": 0.024883
+      "total_return": 0.055264
     },
     "000725|short_reversal": {
       "bars": 660,
@@ -57,16 +57,16 @@
     },
     "000725|trend_follow": {
       "bars": 660,
-      "final_value": 101530.0454,
-      "n_buys": 20,
-      "n_sells": 17,
-      "n_trades": 17,
-      "n_wins": 5,
+      "final_value": 104049.0138,
+      "n_buys": 14,
+      "n_sells": 10,
+      "n_trades": 10,
+      "n_wins": 7,
       "params": {
         "max_risk_ratio": 0.015,
         "trail_atr_multiple": 1.6
       },
-      "total_return": 0.0153
+      "total_return": 0.04049
     }
   },
   "meta": {
@@ -76,6 +76,6 @@
     "stocks": [
       "000725"
     ],
-    "updated_at": "2026-09-26 14:50:02"
+    "updated_at": "2026-09-26 17:30:22"
   }
 }

@@ -20,6 +20,8 @@ PARAM_GRID = {
         "macd_fast": [10, 12],
         "macd_slow": [21, 26],
         "macd_signal": [7, 9],
+        "adx_min": [20, 25],
+        "max_loss_stop_ratio": [0.2, 0.3],
     },
     "momentum": {
         "trail_atr_multiple": [1.4, 1.5, 1.7],
@@ -30,6 +32,8 @@ PARAM_GRID = {
         "macd_fast": [10, 12],
         "macd_slow": [21, 26],
         "macd_signal": [7, 9],
+        "adx_min": [20, 25],
+        "max_loss_stop_ratio": [0.2, 0.3],
     },
     "short_reversal": {
         "trail_atr_multiple": [1.8, 2.0, 2.2],
@@ -40,6 +44,8 @@ PARAM_GRID = {
         "macd_fast": [10, 12],
         "macd_slow": [21, 26],
         "macd_signal": [7, 9],
+        "adx_min": [20, 25],
+        "max_loss_stop_ratio": [0.2, 0.3],
     },
     "boll_ma": {
         "trail_atr_multiple": [1.5, 1.6, 1.8],
@@ -50,6 +56,8 @@ PARAM_GRID = {
         "macd_fast": [10, 12],
         "macd_slow": [21, 26],
         "macd_signal": [7, 9],
+        "adx_min": [20, 25],
+        "max_loss_stop_ratio": [0.2, 0.3],
     },
     "multi_factor": {
         "trail_atr_multiple": [1.6, 1.7, 1.9],
@@ -59,6 +67,8 @@ PARAM_GRID = {
         "macd_fast": [10, 12],
         "macd_slow": [21, 26],
         "macd_signal": [7, 9],
+        "adx_min": [20, 25],
+        "max_loss_stop_ratio": [0.2, 0.3],
     },
 }
 

@@ -77,7 +77,9 @@ strategy_params:
       trail_tight_atr_multiple: 1.0
       macd_fast: 10
       macd_slow: 21
-      macd_signal: 9
+      macd_signal: 7
+      adx_min: 20.0
+      max_loss_stop_ratio: 0.2
     momentum:
       trail_atr_multiple: 1.4
       max_risk_ratio: 0.025

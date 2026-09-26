@@ -1,5 +1,5 @@
 # 多因子复合策略（继承 BaseStrategy）
-# 开仓条件：全局三重过滤（均线多头 + MACD 多头 + 波动率达标，基类执行，其中均线条件
+# 开仓条件：全局四重过滤（均线多头 + MACD 多头 + 波动率达标 + ADX 趋势强度，基类执行，其中均线条件
 #           覆盖原 SMA(20)>SMA(60)）通过，且策略专属信号当日跌幅不超过 5%（pctChg > -5）
 # 平仓条件：纯动态追踪止损（基类，含动态止盈收紧）；均线死叉（SMA20 < SMA60）趋势反转
 import backtrader as bt
@@ -19,7 +19,7 @@ class MultiFactorStrategy(BaseStrategy):
         self.ma60 = bt.indicators.EMA(self.data.close, period=60)
 
     def _on_entry(self):
-        # 全局三重过滤已在基类通过（含均线多头），这里只判断跌幅过滤
+        # 全局四重过滤已在基类通过（含均线多头），这里只判断跌幅过滤
         if self.data.pctChg[0] > -5:
             reason = f"multi_factor: pctChg {self.data.pctChg[0]:.2f} > -5, close {self.data.close[0]:.2f}"
             self._open_position(self.p.trail_atr_multiple, reason=reason)

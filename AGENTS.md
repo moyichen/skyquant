@@ -56,7 +56,7 @@ python main.py --stock-list 000725 --strategy trend_follow  # 仅回测指定股
 | manual_trade_review.py | 手工交易复盘：策略信号匹配、对比统计 |
 | strategy/base.py | 策略基类：ATR 仓位管理、追踪止损、动态止盈、action_log 信号日志、统一输出接口 |
 | strategy/__init__.py | STRATEGY_MAPPING 策略注册表、DEFAULT_STRATEGY_PARAMS 默认参数 |
-| strategy/trend_follow.py | 纯趋势跟随策略：全局三重过滤（均线+MACD+波动率）通过即开仓，无专属信号 |
+| strategy/trend_follow.py | 纯趋势跟随策略：全局四重过滤（均线+MACD+波动率+ADX）通过即开仓，无专属信号 |
 | strategy/momentum.py | 动量策略：动量为正买入，继承基类追踪止损+动态止盈 |
 | strategy/short_reversal.py | 短期反转策略：跌幅超阈值买入，继承基类追踪止损+动态止盈 |
 | strategy/boll_ma.py | 布林带+均线策略：回踩下轨买入，继承基类追踪止损+动态止盈 |
@@ -122,7 +122,8 @@ python main.py --stock-list 000725 --strategy trend_follow  # 仅回测指定股
 **参数**：
 - `atr_period=14`（ATR 周期）
 - `max_risk_ratio=0.02`（单笔最大风险占比）
-- 全局三重趋势过滤：`sma_fast=20` / `sma_slow=60`（均线多头排列）、`macd_fast=12` / `macd_slow=26` / `macd_signal=9` / `macd_momentum_bars=2`（MACD 多头）、`min_volatility_ratio=0.015`（波动率下限）
+- 全局四重趋势过滤：`sma_fast=20` / `sma_slow=60`（均线多头排列）、`macd_fast=12` / `macd_slow=26` / `macd_signal=9` / `macd_momentum_bars=2`（MACD 多头）、`min_volatility_ratio=0.015`（波动率下限）、`adx_period=14` / `adx_min=20`（ADX 趋势强度+DI 方向）
+- 亏损侧机制：`max_loss_stop_ratio=0.30`（最差止损地板=均价×(1-30%)，启用时追踪止损只在盈利侧生效）、`average_down_drop=0.10` / `average_down_ratio=0.25`（首次亏损达 10% 按当前持仓 1/4 摊低加仓，每笔仅一次）
 - `take_profit_atr_multiple=None`（固定止盈距离 ATR 倍数；默认关闭=纯追踪止损，显式配置才启用）
 - `trail_tighten_profit_multiple=None`（动态止盈激活门槛：浮盈达该 ATR 倍数后收紧止损；None 关闭）
 - `trail_tight_atr_multiple=0.8`（动态止盈激活后的收紧追踪止损 ATR 倍数）
@@ -131,27 +132,33 @@ python main.py --stock-list 000725 --strategy trend_follow  # 仅回测指定股
 
 ```
 开仓门控:      sma_fast > sma_slow 且 MACD多头 且 ATR/close > min_volatility_ratio
+              且 ADX >= adx_min 且 +DI > -DI
               → 通过才调用子类 _on_entry()（所有策略强制执行，子类无法绕过）
 MACD 多头判定: DIF > 0（零轴上方）且 DIF > DEA（金叉状态）
               且 DIF 持续上行 macd_momentum_bars 根、MACD 柱持续放大（动量增强）
 ATR 仓位公式:  size = int(总资产 * max_risk_ratio / (ATR * atr_multiple))
 固定止盈价:    take_price = entry_price + ATR * take_profit_atr_multiple（该参数非 None 时，默认关闭）
 追踪止损价:    stop = 持仓以来最高价 - trail_atr_multiple × ATR（只上不下 ratchet）
+              （max_loss_stop_ratio 启用时只在盈利侧生效：candidate > 持仓均价才 ratchet）
+最差止损地板:  loss_floor = 持仓均价 × (1 - max_loss_stop_ratio)，初始止损即地板；
+              收盘 <= 地板才止损（max_loss_stop），摊低加仓成交后地板随新均价下移
 动态止盈收紧:  浮盈(最高价 - entry_price) >= trail_tighten_profit_multiple × ATR 时，
               stop = max(stop, 最高价 - trail_tight_atr_multiple × ATR)
+摊低加仓:      首次收盘亏损 >= average_down_drop 时，按当前持仓 × average_down_ratio
+              挂次日限价单（每笔交易仅一次，未成交下一 bar 条件仍满足则重试）
 ```
 
 **方法签名**：
 
 ```python
-def _entry_filters_ok(self) -> bool             # 全局三重趋势过滤（均线+MACD+波动率），开仓门控
+def _entry_filters_ok(self) -> bool             # 全局四重趋势过滤（均线+MACD+波动率+ADX），开仓门控
 def _macd_bullish(self) -> bool                 # MACD 多头判定（零轴+金叉+动量增强）
 def _position_size(self, atr_multiple) -> int  # ATR 仓位计算（含 NaN 守卫）
 def _open_position(self, atr_multiple)          # 买入 + 设初始止损/止盈 + 记录 entry_bar/entry_atr_multiple
 def _close_position(self)                         # 卖出 + 重置全部持仓状态 + 记录 action_log
 def _update_trailing_stop(self)                   # 追踪止损 + 动态止盈更新（next 调用 _on_exit 前自动执行）
-def next(self)                                    # 模板方法: 无仓->先过三重过滤再 _on_entry(); 有仓先查固定止盈(默认关), 再 _update_trailing_stop, 再 _on_exit()
-def _on_entry(self)                               # 子类重写: 策略专属入场信号（三重过滤已通过）
+def next(self)                                    # 模板方法: 无仓->先过四重过滤再 _on_entry(); 有仓先查固定止盈(默认关), 再 _update_trailing_stop, 再 _on_exit()
+def _on_entry(self)                               # 子类重写: 策略专属入场信号（四重过滤已通过）
 def _on_exit(self)                                # 子类重写: 出场条件（检查 stop_price 或策略专属信号）
 def stop(self)                                    # 回测结束: self.final_value = broker.getvalue()
 def get_equity_dataframe() -> pd.DataFrame        # 每日净值
@@ -168,11 +175,11 @@ def get_action_dataframe() -> pd.DataFrame        # 决策时信号日志（含�
 
 ### 策略子类 — 入场/出场条件
 
-**所有策略共用全局三重趋势过滤**（BaseStrategy `_entry_filters_ok` 强制执行）：均线多头（SMA fast>slow）+ MACD 多头（DIF>0、金叉状态、DIF/柱持续放大）+ 波动率达标（ATR/close > min_volatility_ratio）。下表"专属入场信号"在三重过滤通过后才判断：
+**所有策略共用全局四重趋势过滤**（BaseStrategy `_entry_filters_ok` 强制执行）：均线多头（EMA fast>slow）+ MACD 多头（DIF>0、金叉状态、DIF/柱持续放大）+ 波动率达标（ATR/close > min_volatility_ratio）+ ADX 趋势强度（ADX >= adx_min 且 +DI > -DI，区分趋势与震荡）。下表"专属入场信号"在四重过滤通过后才判断：
 
 | 策略 | 关键参数（默认值） | 专属入场信号 | 出场条件 |
 |------|-------------------|----------|----------|
-| trend_follow | `trail_atr_multiple=1.6`, `max_risk_ratio=0.015` | 无（三重过滤通过即开仓，纯趋势跟随） | 追踪止损+动态止盈 / 跌破止损 |
+| trend_follow | `trail_atr_multiple=1.6`, `max_risk_ratio=0.015` | 无（四重过滤通过即开仓，纯趋势跟随） | 追踪止损+动态止盈 / 跌破止损 |
 | momentum | `trail_atr_multiple=1.5`, `momentum_period=20` | Momentum(period) > 0 | 追踪止损+动态止盈 / 动量转负 |
 | short_reversal | `trail_atr_multiple=2.0`, `drop_ratio=0.18` | (preclose-close)/preclose > drop_ratio | 追踪止损+动态止盈 / 跌破止损 |
 | boll_ma | `trail_atr_multiple=1.6`, `boll_period=20` | close <= 布林下轨 | 追踪止损+动态止盈 / 突破布林上轨 |
@@ -182,7 +189,7 @@ def get_action_dataframe() -> pd.DataFrame        # 决策时信号日志（含�
 
 ### trend_follow 策略详解（纯趋势跟随）
 
-源文件：[strategy/trend_follow.py](strategy/trend_follow.py)。**继承 BaseStrategy**，无任何策略专属指标与信号——全局三重趋势过滤（均线多头 + MACD 多头 + 波动率达标）通过即无条件开仓（`_on_entry` 直接调用基类 `_open_position(trail_atr_multiple)`），`_on_exit` 仅检查基类维护的追踪止损。追踪止损、动态止盈、仓位管理、日志接口全部复用基类。该策略是所有策略的"最低要求基线"：任一策略在三重过滤下的表现都可与它对照。
+源文件：[strategy/trend_follow.py](strategy/trend_follow.py)。**继承 BaseStrategy**，无任何策略专属指标与信号——全局四重趋势过滤（均线多头 + MACD 多头 + 波动率达标 + ADX 趋势强度）通过即无条件开仓（`_on_entry` 直接调用基类 `_open_position(trail_atr_multiple)`），`_on_exit` 仅检查基类维护的追踪止损。追踪止损、动态止盈、仓位管理、日志接口全部复用基类。该策略是所有策略的"最低要求基线"：任一策略在四重过滤下的表现都可与它对照。
 
 **子类参数**（在基类参数之上新增/覆盖）：
 
@@ -193,9 +200,9 @@ max_risk_ratio=0.015          # 覆盖基类默认 0.02
 
 **指标**：无策略专属指标；ATR、SMA 快慢线、MACD 均由基类 `__init__` 创建。
 
-**入场逻辑**（`_on_entry`，基类 `next()` 在空仓且三重过滤通过后调用）：
+**入场逻辑**（`_on_entry`，基类 `next()` 在空仓且四重过滤通过后调用）：
 
-1. 无专属信号：三重过滤通过即调用基类 `self._open_position(self.p.trail_atr_multiple)`：
+1. 无专属信号：四重过滤通过即调用基类 `self._open_position(self.p.trail_atr_multiple)`：
    - 仓位：`size = int(broker.getvalue() * max_risk_ratio / (atr[0] * trail_atr_multiple))`
    - 初始止损：`stop_price = entry_price - trail_atr_multiple * atr[0]`
    - 固定止盈（可选，默认关）：`take_price = entry_price + take_profit_atr_multiple * atr[0]`
@@ -442,6 +449,9 @@ python opt_pipeline/param_optimize.py --maxcpu 4 --stock-list 000725,600519  # �
 | `macd_fast` / `macd_slow` / `macd_signal` | 全局 MACD 多头过滤的 EMA/信号线周期 | 12 / 26 / 9 |
 | `macd_momentum_bars` | MACD 多头动量确认：DIF/柱需连续放大的 bar 数（未纳入网格） | 2 |
 | `min_volatility_ratio` | 全局波动率过滤：ATR/close 超过该下限才允许开仓 | 0.015 |
+| `adx_period` / `adx_min` | 全局 ADX 趋势强度过滤：ADX >= adx_min 才开仓（< 视为横盘震荡），且要求 +DI > -DI 多头方向（未纳入网格） | 14 / 20 |
+| `max_loss_stop_ratio` | 亏损侧最差止损地板=持仓均价×(1-该比例)；启用时初始止损=地板、追踪止损只在盈利侧 ratchet（已纳入网格 [0.2, 0.3]） | 0.30 |
+| `average_down_drop` / `average_down_ratio` | 首次亏损达 drop 时摊低加仓（按当前持仓 × ratio，次日限价单，每笔交易仅一次）；加仓成交后地板随新均价下移（未纳入网格） | 0.10 / 0.25 |
 | `trail_tighten_profit_multiple` | 动态止盈激活门槛（浮盈达该 ATR 倍数后收紧止损）；None 关闭 | None |
 | `trail_tight_atr_multiple` | 动态止盈激活后的收紧追踪止损 ATR 倍数（应小于 trail_atr_multiple） | 0.8 |
 
@@ -454,19 +464,19 @@ python opt_pipeline/param_optimize.py --maxcpu 4 --stock-list 000725,600519  # �
 | `drop_ratio` | short_reversal | 单日跌幅阈值，(preclose−close)/preclose > drop_ratio 才开仓 | 0.18 |
 | `boll_period` | boll_ma | 布林带周期 | 20 |
 
-> `sma_fast`/`sma_slow`/`macd_*`/`min_volatility_ratio` 已上移到通用参数（全局三重过滤），不再属于任何单一策略。
+> `sma_fast`/`sma_slow`/`macd_*`/`min_volatility_ratio`/`adx_*` 已上移到通用参数（全局四重过滤），不再属于任何单一策略。
 
 各策略完整网格取值（`PARAM_GRID`）：
 
 | 策略 | 网格参数 → 取值 | 组合数 |
 |------|------------------|--------|
-| trend_follow | `trail_atr_multiple` [1.6,1.8,2.0]；`min_volatility_ratio` [0.008,0.015,0.025]；`max_risk_ratio` [0.015,0.02,0.025]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0,1.2]；`macd_fast` [10,12]；`macd_slow` [21,26]；`macd_signal` [7,9] | 1944 |
-| momentum | `trail_atr_multiple` [1.4,1.5,1.7]；`max_risk_ratio` [0.02,0.025]；`momentum_period` [18,20,22]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0,1.2]；`macd_fast` [10,12]；`macd_slow` [21,26]；`macd_signal` [7,9] | 1296 |
-| short_reversal | `trail_atr_multiple` [1.8,2.0,2.2]；`max_risk_ratio` [0.02]；`drop_ratio` [0.15,0.18,0.2]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0,1.2]；`macd_fast` [10,12]；`macd_slow` [21,26]；`macd_signal` [7,9] | 648 |
-| boll_ma | `trail_atr_multiple` [1.5,1.6,1.8]；`max_risk_ratio` [0.02]；`boll_period` [18,20,22]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0,1.2]；`macd_fast` [10,12]；`macd_slow` [21,26]；`macd_signal` [7,9] | 648 |
-| multi_factor | `trail_atr_multiple` [1.6,1.7,1.9]；`max_risk_ratio` [0.018,0.02]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0,1.2]；`macd_fast` [10,12]；`macd_slow` [21,26]；`macd_signal` [7,9] | 432 |
+| trend_follow | `trail_atr_multiple` [1.6,1.8,2.0]；`min_volatility_ratio` [0.008,0.015,0.025]；`max_risk_ratio` [0.015,0.02,0.025]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0,1.2]；`macd_fast` [10,12]；`macd_slow` [21,26]；`macd_signal` [7,9]；`adx_min` [20,25]；`max_loss_stop_ratio` [0.2,0.3] | 7776 |
+| momentum | `trail_atr_multiple` [1.4,1.5,1.7]；`max_risk_ratio` [0.02,0.025]；`momentum_period` [18,20,22]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0,1.2]；`macd_fast` [10,12]；`macd_slow` [21,26]；`macd_signal` [7,9]；`adx_min` [20,25]；`max_loss_stop_ratio` [0.2,0.3] | 5184 |
+| short_reversal | `trail_atr_multiple` [1.8,2.0,2.2]；`max_risk_ratio` [0.02]；`drop_ratio` [0.15,0.18,0.2]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0,1.2]；`macd_fast` [10,12]；`macd_slow` [21,26]；`macd_signal` [7,9]；`adx_min` [20,25]；`max_loss_stop_ratio` [0.2,0.3] | 2592 |
+| boll_ma | `trail_atr_multiple` [1.5,1.6,1.8]；`max_risk_ratio` [0.02]；`boll_period` [18,20,22]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0,1.2]；`macd_fast` [10,12]；`macd_slow` [21,26]；`macd_signal` [7,9]；`adx_min` [20,25]；`max_loss_stop_ratio` [0.2,0.3] | 2592 |
+| multi_factor | `trail_atr_multiple` [1.6,1.7,1.9]；`max_risk_ratio` [0.018,0.02]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0,1.2]；`macd_fast` [10,12]；`macd_slow` [21,26]；`macd_signal` [7,9]；`adx_min` [20,25]；`max_loss_stop_ratio` [0.2,0.3] | 1728 |
 
-> 单只股票全策略合计 4968 个组合；仅保留 `profit_rate > 0` 的组合写入 CSV。
+> 单只股票全策略合计 19872 个组合；仅保留 `profit_rate > 0` 的组合写入 CSV。
 
 **注意事项**：
 - **专属参数必须纳入网格**：`write_param_to_config.py` 只写网格产出的列，未进网格的参数（如曾遗漏的 `min_volatility_ratio`）会在写配置时丢失并静默回退类默认值。
@@ -536,12 +546,12 @@ class ManualTradeReview:
 ### A. 逻辑正确性
 
 1. **追踪止损只上不下（ratchet）**：`stop_price` 的所有写路径必须在 `BaseStrategy._update_trailing_stop` 内，且保留 `if candidate_stop > self.stop_price` 守卫；子类对 `stop_price` 只读，任何新出场逻辑不得直接下移止损。
-2. **三重全局过滤不绕过**：开仓只能走基类 `next() → _entry_filters_ok()（均线多头 + MACD 多头 + ATR 波动率）→ _on_entry()`；子类 `_on_entry` 内只写专属信号，不得跳过过滤直接 `_open_position`。
+2. **四重全局过滤不绕过**：开仓只能走基类 `next() → _entry_filters_ok()（均线多头 + MACD 多头 + ATR 波动率 + ADX 趋势强度/DI 方向）→ _on_entry()`；子类 `_on_entry` 内只写专属信号，不得跳过过滤直接 `_open_position`。
 3. **出场比较符统一**：所有子类 `_on_exit` 对止损的比较统一用收盘价 `close[0] <= self.stop_price`（5 个策略均为 `<=`，含等于止损价的边界 K 线，边界明确不留歧义）。
 4. **收盘价确认口径**：止损/止盈触发统一用当根**收盘价**，不得在策略里改用盘中 `low`/`high`——盘中插针口径与收盘价口径同参数结果不可比（历史教训）。
 5. **ATR NaN 守卫**：任何新增使用 `self.atr[0]` 的计算必须防预热期 NaN（`math.isnan` 判空），否则 `int(nan)` 崩溃。
 6. **平仓状态完整重置**：`_close_position` 必须重置 `stop_price/take_price/entry_price/entry_bar/entry_atr_multiple`，避免下一笔仓位状态残留。
-7. **只做多、不做空**；无交易（0 trades）的策略先确认是三重过滤严格的预期结果，再排查 bug。
+7. **只做多、不做空**；无交易（0 trades）的策略先确认是四重过滤严格的预期结果，再排查 bug。
 
 ### B. 参数契约
 

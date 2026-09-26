@@ -1,9 +1,9 @@
 # 纯趋势跟随策略（继承 BaseStrategy）
-# 开仓条件：全局三重趋势过滤全部通过即开仓（无策略专属附加信号）——
+# 开仓条件：全局四重趋势过滤全部通过即开仓（无策略专属附加信号）——
 #   1. 均线趋势：EMA(sma_fast) > EMA(sma_slow) 多头排列
 #   2. MACD 多头：DIF > 0 且 DIF > DEA（金叉状态）且 DIF/柱持续放大（动量增强）
 #   3. 波动率：ATR/收盘价 > min_volatility_ratio
-#   三重过滤由基类 _entry_filters_ok 统一执行，本策略 _on_entry 无条件开仓
+#   四重过滤由基类 _entry_filters_ok 统一执行，本策略 _on_entry 无条件开仓
 # 平仓条件：纯动态追踪止损（基类）——
 #   - 基础追踪：stop = 持仓以来最高价 - trail_atr_multiple × ATR（只上不下）
 #   - 动态止盈：浮盈/ATR >= trail_tighten_profit_multiple 后收紧为 trail_tight_atr_multiple × ATR
@@ -20,7 +20,7 @@ class TrendFollowStrategy(BaseStrategy):
     )
 
     def _on_entry(self):
-        # 全局三重过滤已在基类通过，这里无条件开仓（纯趋势跟随）
+        # 全局四重过滤已在基类通过，这里无条件开仓（纯趋势跟随）
         reason = f"trend_follow: triple_filter_passed, close {self.data.close[0]:.2f}"
         self._open_position(self.p.trail_atr_multiple, reason=reason)
 

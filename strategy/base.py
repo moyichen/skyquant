@@ -31,27 +31,43 @@ class BaseStrategy(bt.Strategy):
       - 卖出：不受限价约束，信号次日以市价成交，确保止损/退出一定执行。
       - 同一时间只允许一个在途订单；订单未了结前不再产生新信号。
 
-    开仓条件（全局三重趋势过滤，由基类统一执行，子类无法绕过）：
+    开仓条件（全局四重趋势过滤，由基类统一执行，子类无法绕过）：
       1. 均线趋势：EMA(sma_fast) > EMA(sma_slow)，只做多头排列
       2. MACD 多头：DIF > 0（零轴上方）且 DIF > DEA（金叉状态）
          且 DIF 持续上行 macd_momentum_bars 根、MACD 柱持续放大（动量增强）
       3. 波动率过滤：ATR/收盘价 > min_volatility_ratio，过滤横盘假突破
+      4. ADX 趋势强度：ADX >= adx_min（低于阈值视为横盘震荡，直接不开仓）
+         且 +DI > -DI（多头方向）；ADX 区分趋势行情与震荡行情
       全部通过后才调用子类 _on_entry() 判断策略专属信号。
 
     平仓条件（多层级，按优先级）：
       1. 纯动态追踪止损（默认唯一出场）：跌破 stop_price → 立即平仓
-         - 基础追踪：stop = 持仓以来最高价 - trail_atr_multiple × ATR（只上不下）
+         - 亏损侧（max_loss_stop_ratio 默认 0.30 启用）：初始止损 = 均价 × (1-30%) 最差地板，
+           追踪止损只在盈利侧生效；首次亏损达 average_down_drop(10%) 时按当前持仓 1/4 摊低加仓
+           （每笔交易仅一次，加仓成交后地板随新均价下移）
+         - 基础追踪（盈利侧）：stop = 持仓以来最高价 - trail_atr_multiple × ATR（只上不下）
          - 动态止盈：浮盈(最高价-入场价)/ATR >= trail_tighten_profit_multiple 后，
            止损倍数收紧为 trail_tight_atr_multiple，
            即 stop = 最高价 - trail_tight_atr_multiple × ATR
          - 无固定止盈（take_profit_atr_multiple 默认 None），全程跟随趋势吃满波段
       2. 子类信号止损：_on_exit() 中检查 stop_price 或策略专属出场信号
+
+    风险提示（使用回测结果前必须理解，详见 spec.md 第 9 章）：
+      1. 尾部风险：max_loss_stop_ratio 启用时单笔最差亏损可达账户 -15% 左右
+         （30% 价格跌幅 × 约 50% 仓位敞口）；摊低加仓后敞口更高。
+      2. 摊低加仓是均值回归假设：单边阴跌中加仓买在半山腰，地板止损失效，
+         该机制针对低价标的假突破设计，不是普适的亏损补救手段。
+      3. 信号价 != 成交价：决策基于 T 日收盘，成交在 T+1；限价单未成交即放弃，
+         实盘连续跳空时可能长期无法建仓，建仓节奏与回测不可比。
+      4. 只做多、无对冲、T+1 与涨跌停约束：系统性下跌中无盈利来源，
+         极端行情下价格连续性假设不成立。
+      5. 过拟合：寻优最优参数只保证历史表现，外样本/滚动校验只能缓解不能消除。
     """
 
     params = (
         ("atr_period", 14),                        # ATR 计算周期
         ("max_risk_ratio", 0.02),                  # 单笔最大风险占总资金比例
-        # ---- 全局三重趋势过滤参数 ----
+        # ---- 全局四重趋势过滤参数 ----
         ("sma_fast", 20),                          # 均线趋势过滤：快线周期
         ("sma_slow", 60),                          # 均线趋势过滤：慢线周期
         ("macd_fast", 12),                         # MACD 快线 EMA 周期
@@ -59,6 +75,12 @@ class BaseStrategy(bt.Strategy):
         ("macd_signal", 9),                        # MACD 信号线（DEA）周期
         ("macd_momentum_bars", 2),                 # MACD 多头动量确认：DIF/柱需连续放大的 bar 数
         ("min_volatility_ratio", 0.015),           # 波动率过滤：ATR/收盘价下限
+        ("adx_period", 14),                        # ADX/DMI 计算周期
+        ("adx_min", 20),                           # ADX 趋势强度下限（< 视为横盘震荡不开仓；>25 强趋势）
+        # ---- 亏损侧机制（低价标的：放宽最差止损 + 首次亏损摊低加仓）----
+        ("max_loss_stop_ratio", 0.30),             # 最差止损：收盘价较持仓均价亏损达 30% 才止损（None=ATR 初始止损；启用时追踪止损只在盈利侧生效）
+        ("average_down_drop", 0.10),               # 首次亏损达该比例时摊低加仓（None 关闭；每次交易只加一次）
+        ("average_down_ratio", 0.25),              # 摊低加仓量 = 当前持仓 × 该比例
         # ---- 止盈止损参数 ----
         ("take_profit_atr_multiple", None),        # 固定止盈距离（ATR 倍数）；默认 None=纯追踪止损
         ("trail_tighten_profit_multiple", None),   # 动态止盈激活门槛：浮盈达该 ATR 倍数后收紧止损；None 关闭
@@ -78,6 +100,8 @@ class BaseStrategy(bt.Strategy):
             period_me2=self.p.macd_slow,
             period_signal=self.p.macd_signal,
         )
+        # ADX/DMI：区分趋势行情与震荡行情（adx 趋势强度，plusDI/minusDI 判定方向）
+        self.dmi = bt.indicators.DMI(self.data, period=self.p.adx_period)
         # 交易 / 净值记录容器
         self.equity_log = []
         self.trade_log = []
@@ -104,6 +128,10 @@ class BaseStrategy(bt.Strategy):
         self.entry_atr_multiple = None
         # 动态止盈是否已激活（收紧追踪止损），用于卖出原因标注
         self._trail_tightened = False
+        # 亏损侧最差止损地板（max_loss_stop_ratio 启用时非 None；摊低加仓后随地板下移）
+        self._loss_floor = None
+        # 本次交易是否已执行过摊低加仓（每笔交易只加一次）
+        self._averaged_down = False
         # 子类专属指标
         self._init_indicators()
 
@@ -255,7 +283,11 @@ class BaseStrategy(bt.Strategy):
                 row["exec_price"] = round(event["exec_price"], 4)
                 row["exec_size"] = event["exec_size"]
                 if event["is_buy"]:
-                    self._init_entry_on_fill(event["exec_price"], event["exec_size"], pending["atr_multiple"])
+                    if self._hold_size == 0:
+                        self._init_entry_on_fill(event["exec_price"], event["exec_size"], pending["atr_multiple"])
+                    else:
+                        # 持仓期间的买入 = 摊低加仓成交
+                        self._update_add_on_fill(event["exec_price"], event["exec_size"])
                     row["avg_cost"] = round(self._hold_cost / self._hold_size, 4) if self._hold_size else None
                 else:
                     avg_cost = self._hold_cost / self._hold_size if self._hold_size > 0 else None
@@ -279,16 +311,36 @@ class BaseStrategy(bt.Strategy):
         self.entry_bar = len(self) - 1
         self.entry_atr_multiple = atr_multiple
         self._trail_tightened = False
-        if atr_val is not None and not math.isnan(atr_val) and atr_val > 0:
+        self._averaged_down = False
+        if self.p.max_loss_stop_ratio:
+            # 亏损侧放宽：初始止损 = 最差地板（均价 × (1-30%)），追踪止损只在盈利侧生效
+            self._loss_floor = fill_price * (1 - self.p.max_loss_stop_ratio)
+            self.stop_price = self._loss_floor
+        elif atr_val is not None and not math.isnan(atr_val) and atr_val > 0:
+            self._loss_floor = None
             self.stop_price = fill_price - atr_multiple * atr_val
-            if self.p.take_profit_atr_multiple:
-                self.take_price = fill_price + atr_val * self.p.take_profit_atr_multiple
-            else:
-                self.take_price = None
         else:
             # 理论不可达（信号通过要求 ATR 有效），防御性兜底
+            self._loss_floor = None
             self.stop_price = fill_price * 0.9
+        if self.p.take_profit_atr_multiple and atr_val is not None and not math.isnan(atr_val) and atr_val > 0:
+            self.take_price = fill_price + atr_val * self.p.take_profit_atr_multiple
+        else:
             self.take_price = None
+
+    def _update_add_on_fill(self, fill_price, fill_size):
+        """摊低加仓成交：更新加权均价与总规模，并把亏损侧地板调整到新均价"""
+        self._hold_cost += fill_price * fill_size
+        self._hold_size += fill_size
+        self.entry_size = (self.entry_size or 0) + fill_size
+        self._averaged_down = True
+        if self.p.max_loss_stop_ratio and self._hold_size > 0:
+            new_floor = (self._hold_cost / self._hold_size) * (1 - self.p.max_loss_stop_ratio)
+            # 止损仍停在旧地板上（尚未锁定盈利）时允许随地板下移，维持"最差 -30%"口径；
+            # 若追踪止损已在地板上方（盈利锁定），保持不动
+            if self._loss_floor is not None and self.stop_price <= self._loss_floor:
+                self.stop_price = new_floor
+            self._loss_floor = new_floor
 
     def _reset_position_state(self):
         """卖出成交后重置全部持仓状态"""
@@ -300,9 +352,17 @@ class BaseStrategy(bt.Strategy):
         self.entry_bar = None
         self.entry_atr_multiple = None
         self._trail_tightened = False
+        self._loss_floor = None
+        self._averaged_down = False
 
     def _trail_stop_reason(self):
         """生成追踪止损卖出原因（含是否已动态收紧），供子类 _on_exit 使用"""
+        # 止损仍停在最差地板上 = 亏损侧最大容忍度触发
+        if self._loss_floor is not None and self.stop_price <= self._loss_floor:
+            return (
+                f"max_loss_stop: close {self.data.close[0]:.2f} <= floor {self.stop_price:.2f} "
+                f"(worst -{self.p.max_loss_stop_ratio * 100:.0f}%)"
+            )
         tag = "trail_stop_tightened" if self._trail_tightened else "trail_stop"
         return f"{tag}: close {self.data.close[0]:.2f} <= stop {self.stop_price:.2f}"
 
@@ -316,7 +376,7 @@ class BaseStrategy(bt.Strategy):
         if self._pending_order is not None:
             return
         if not self.position:
-            # 全局三重趋势过滤：全部通过才允许子类判断专属入场信号
+            # 全局四重趋势过滤：全部通过才允许子类判断专属入场信号
             if self._entry_filters_ok():
                 self._on_entry()
             return
@@ -327,9 +387,33 @@ class BaseStrategy(bt.Strategy):
         # 追踪止损 + 动态止盈：更新 stop_price（只上不下），供子类 _on_exit 检查
         self._update_trailing_stop()
         self._on_exit()
+        # 摊低加仓：出场优先；仍持仓且无在途订单时，首次亏损达阈值按比例加仓摊低成本
+        if self._pending_order is None and self.position and self._loss_floor is not None \
+                and self.p.average_down_drop is not None and not self._averaged_down and self._hold_size > 0:
+            avg_cost = self._hold_cost / self._hold_size
+            if self.data.close[0] <= avg_cost * (1 - self.p.average_down_drop):
+                self._average_down(avg_cost)
+
+    def _average_down(self, avg_cost):
+        """首次亏损达 average_down_drop 时摊低加仓：按当前持仓 × average_down_ratio 挂次日限价单"""
+        add_size = int(self.position.size * self.p.average_down_ratio)
+        if add_size <= 0:
+            return
+        next_session = self._next_session_date()
+        if next_session is None:
+            return
+        trigger_price = self.data.close[0]
+        reason = (
+            f"average_down: loss {abs(trigger_price / avg_cost - 1) * 100:.1f}% "
+            f">= {self.p.average_down_drop * 100:.0f}%, add {self.p.average_down_ratio:.0%} position"
+        )
+        order = self.buy(size=add_size, exectype=bt.Order.Limit, price=trigger_price, valid=next_session)
+        action_index = len(self.action_log)
+        self.action_log.append(self._new_action_row("BUY", trigger_price, add_size, reason))
+        self._pending_order = {"ref": order.ref, "side": "BUY", "action_index": action_index, "atr_multiple": None}
 
     def _entry_filters_ok(self):
-        """全局三重趋势过滤：均线多头 + MACD 多头 + 波动率达标，全部通过才可开仓"""
+        """全局四重趋势过滤：均线多头 + MACD 多头 + 波动率达标 + ADX 趋势强度，全部通过才可开仓"""
         # 1. 均线趋势：快线在慢线上方（多头排列；预热期 NaN 比较为 False，天然不通过）
         if not (self.sma_fast[0] > self.sma_slow[0]):
             return False
@@ -338,6 +422,13 @@ class BaseStrategy(bt.Strategy):
             return False
         # 3. 波动率过滤：ATR/收盘价超过下限，过滤横盘假突破
         if not (self.atr[0] / self.data.close[0] > self.p.min_volatility_ratio):
+            return False
+        # 4. ADX 趋势强度：低于下限视为横盘震荡直接不开仓（预热期 NaN 天然不通过）
+        adx_val = self.dmi.adx[0]
+        if math.isnan(adx_val) or adx_val < self.p.adx_min:
+            return False
+        #    方向确认：+DI > -DI 才算多头趋势
+        if not (self.dmi.plusDI[0] > self.dmi.minusDI[0]):
             return False
         return True
 
@@ -381,6 +472,12 @@ class BaseStrategy(bt.Strategy):
                 if tight_stop > candidate_stop:
                     self._trail_tightened = True
                 candidate_stop = max(candidate_stop, tight_stop)
+        # 亏损侧放宽启用时：追踪止损只在盈利侧生效（candidate 高于持仓均价才 ratchet），
+        # 否则紧 ATR 止损会先于最差地板触发，亏损侧放宽形同虚设
+        if self._loss_floor is not None:
+            avg_cost = self._hold_cost / self._hold_size if self._hold_size > 0 else self.entry_price
+            if candidate_stop <= avg_cost:
+                return
         # 只上不下（ratchet）
         if candidate_stop > self.stop_price:
             self.stop_price = candidate_stop

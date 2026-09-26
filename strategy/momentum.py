@@ -1,5 +1,5 @@
 # 动量趋势策略（继承 BaseStrategy）
-# 开仓条件：全局三重过滤（均线多头 + MACD 多头 + 波动率达标，基类执行）通过，
+# 开仓条件：全局四重过滤（均线多头 + MACD 多头 + 波动率达标 + ADX 趋势强度，基类执行）通过，
 #           且策略专属信号 Momentum(momentum_period) > 0
 # 平仓条件：纯动态追踪止损（基类，含动态止盈收紧）；专属信号 Momentum < 0 趋势走坏
 import backtrader as bt
@@ -20,7 +20,7 @@ class MomentumStrategy(BaseStrategy):
         )
 
     def _on_entry(self):
-        # 全局三重过滤已在基类通过，这里只判断策略专属动量信号
+        # 全局四重过滤已在基类通过，这里只判断策略专属动量信号
         if self.mom[0] > 0:
             reason = f"momentum_positive: mom {self.mom[0]:.4f} > 0, close {self.data.close[0]:.2f}"
             self._open_position(self.p.trail_atr_multiple, reason=reason)
