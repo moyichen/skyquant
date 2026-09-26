@@ -24,6 +24,13 @@ class BaseStrategy(bt.Strategy):
                     reason 描述卖出逻辑，写入 action_log 与 trade_log 供人工分析；
                     追踪止损与动态止盈由基类 next() 在调用 _on_exit 前自动更新 stop_price）
 
+    开仓执行模型（买入限价单，卖出市价单）：
+      - 买入：信号日收盘触发后，以触发收盘价为限价挂单，仅在【下一交易日】有效，
+        次日盘中触及限价才成交（开盘价低于限价时以开盘价成交）；次日未成交则自动放弃。
+        避免跳空高开放大买入成本（如节后首日高开）。
+      - 卖出：不受限价约束，信号次日以市价成交，确保止损/退出一定执行。
+      - 同一时间只允许一个在途订单；订单未了结前不再产生新信号。
+
     开仓条件（全局三重趋势过滤，由基类统一执行，子类无法绕过）：
       1. 均线趋势：EMA(sma_fast) > EMA(sma_slow)，只做多头排列
       2. MACD 多头：DIF > 0（零轴上方）且 DIF > DEA（金叉状态）
@@ -78,13 +85,16 @@ class BaseStrategy(bt.Strategy):
         # notify_order 记录的实际成交信息
         self.entry_size = None
         self.exit_price = None
-        # 持仓成本跟踪（按实际成交加权），用于买入均价与卖出获利估算
+        # 持仓成本跟踪（按实际成交加权），用于买入均价与卖出盈亏
         self._hold_cost = 0.0
         self._hold_size = 0
         # 平仓原因（_close_position 写入，notify_trade 消费到 trade_log）
         self.exit_reason = None
-        # 待回填成交量的 action_log 索引（决策时记录意图，成交时回填实际量）
-        self._pending_action_index = None
+        # 在途订单状态机：None 表示无在途订单；否则为
+        # {"ref": order.ref, "side": "BUY"/"SELL", "action_index": 行索引, "atr_multiple": 买入止损倍数}
+        self._pending_order = None
+        # notify_order 收到的终态事件，在 next() 顶部统一处理（此时指标/bar 索引可用）
+        self._order_events = []
         # 止损 / 止盈价
         self.stop_price = None
         self.take_price = None
@@ -101,25 +111,32 @@ class BaseStrategy(bt.Strategy):
         """子类重写：初始化策略专属指标（如均线、动量、布林带）"""
 
     # ===================== 订单与交易回调 =====================
+    # 订单终态 -> action_log 状态文案
+    _ORDER_FAIL_STATUS = {
+        "Expired": "EXPIRED",    # 限价单次日未成交，自动放弃
+        "Canceled": "CANCELED",
+        "Margin": "MARGIN",
+        "Rejected": "REJECTED",
+    }
+
     def notify_order(self, order):
-        """记录实际成交：买入数量 / 卖出价格，供 notify_trade 生成交易记录；
-        同时把该笔订单的实际成交量回填到对应 action_log 行（exec_size）"""
-        if order.status == order.Completed:
-            if order.isbuy():
-                self.entry_size = order.executed.size
-                self._hold_cost += order.executed.price * order.executed.size
-                self._hold_size += order.executed.size
-            else:
-                self.exit_price = order.executed.price
-                self._hold_cost = 0.0
-                self._hold_size = 0
-            # 回填本次实际成交量（决策时的 size 是意图量，现金不足时可能未成交）
-            if self._pending_action_index is not None:
-                self.action_log[self._pending_action_index]["exec_size"] = order.executed.size
-                self._pending_action_index = None
+        """收集订单终态事件（成交/失败），在 next() 顶部统一处理"""
+        if order.status in [order.Submitted, order.Accepted, order.Partial]:
+            return
+        exec_dt = bt.num2date(order.executed.dt).date() if getattr(order.executed, "dt", None) else None
+        self._order_events.append(
+            {
+                "ref": order.ref,
+                "status_name": order.getstatusname(order.status),
+                "is_buy": order.isbuy(),
+                "exec_price": order.executed.price,
+                "exec_size": abs(int(order.executed.size)),
+                "exec_dt": exec_dt,
+            }
+        )
 
     def notify_trade(self, trade):
-        """持仓平仓时生成标准交易记录"""
+        """持仓平仓时生成标准交易记录，并把净盈亏回填到最近一笔 SELL action 行"""
         if not trade.isclosed:
             return
         try:
@@ -140,11 +157,25 @@ class BaseStrategy(bt.Strategy):
                     "exit_reason": self.exit_reason,
                 }
             )
+            # 回填净盈亏到对应的 SELL action 行（时序无关：倒序找第一笔未回填的 SELL）
+            for row in reversed(self.action_log):
+                if row["side"] == "SELL" and row.get("net_profit_loss") is None:
+                    row["net_profit_loss"] = round(trade.pnlcomm, 2)
+                    row["net_return"] = round(profit_rate, 4)
+                    break
             self.entry_size = None
             self.exit_price = None
             self.exit_reason = None
         except Exception as e:
             print(f"Trade record parsing error: {e}, trade={trade}")
+
+    def _next_session_date(self):
+        """返回下一交易日的日期（限价单有效期）；无后续 K 线时返回 None"""
+        next_index = len(self)  # 当前 bar 是数组索引 len(self)-1，下一根为 len(self)
+        dt_array = self.data.datetime.array
+        if next_index >= len(dt_array):
+            return None
+        return bt.num2date(dt_array[next_index]).date()
 
     # ===================== 仓位与风控（子类调用的工具方法） =====================
     def _position_size(self, atr_multiple):
@@ -159,60 +190,110 @@ class BaseStrategy(bt.Strategy):
         risk_cap = self.broker.getvalue() * self.p.max_risk_ratio
         return int(risk_cap / risk_per_share)
 
+    def _new_action_row(self, side, price, size, reason):
+        """创建一行整合日志（信号触发信息 + 待回填的实际成交信息）"""
+        return {
+            "date": self.data.datetime.date(0),
+            "side": side,
+            "trigger_price": price,
+            "size": size,
+            "reason": reason,
+            "status": "PENDING",
+            "exec_date": None,
+            "exec_price": None,
+            "exec_size": None,
+            "avg_cost": None,
+            "net_profit_loss": None,
+            "net_return": None,
+        }
+
     def _open_position(self, atr_multiple, reason=""):
-        """开仓：计算仓位 → 买入 → 设置初始止损与固定止盈 → 记录入场信息"""
+        """挂【次日限价买单】：以触发收盘价为限价，仅下一交易日有效，未成交自动放弃"""
+        if self._pending_order is not None:
+            return
         size = self._position_size(atr_multiple)
-        if size > 0:
-            self.buy(size=size)
-            atr_val = self.atr[0]
-            self.stop_price = self.data.close[0] - atr_val * atr_multiple
-            self.entry_price = self.data.close[0]
-            self.entry_bar = len(self) - 1
-            self.entry_atr_multiple = atr_multiple
-            # 固定止盈（take_profit_atr_multiple 非 None 时启用）
-            if self.p.take_profit_atr_multiple:
-                self.take_price = self.entry_price + atr_val * self.p.take_profit_atr_multiple
-            else:
-                self.take_price = None
-            # 预计持仓均价（已有持仓按实际成交加权 + 本次按决策价估算）
-            price = self.data.close[0]
-            total_size = self._hold_size + size
-            avg_cost = (self._hold_cost + price * size) / total_size if total_size > 0 else price
-            self.action_log.append(
-                {
-                    "date": self.data.datetime.date(0),
-                    "side": "BUY",
-                    "price": price,
-                    "size": size,
-                    "reason": reason,
-                    "avg_cost": round(avg_cost, 4),
-                }
-            )
-            self._pending_action_index = len(self.action_log) - 1
+        if size <= 0:
+            return
+        next_session = self._next_session_date()
+        if next_session is None:
+            return  # 最后一个 bar：没有下一交易日可挂单
+        trigger_price = self.data.close[0]
+        order = self.buy(size=size, exectype=bt.Order.Limit, price=trigger_price, valid=next_session)
+        action_index = len(self.action_log)
+        self.action_log.append(self._new_action_row("BUY", trigger_price, size, reason))
+        self._pending_order = {
+            "ref": order.ref,
+            "side": "BUY",
+            "action_index": action_index,
+            "atr_multiple": atr_multiple,
+        }
 
     def _close_position(self, reason=""):
-        """平仓并重置所有持仓状态；reason 记录卖出逻辑，供 action_log/trade_log 人工分析"""
-        self.close()
-        price = self.data.close[0]
+        """挂【次日市价卖单】（卖出不受限价约束）；实际成交与盈亏在成交后回填"""
+        if self._pending_order is not None:
+            return
+        order = self.close()
+        trigger_price = self.data.close[0]
         size = self.position.size
-        # 卖出获利估算（基于实际成交加权均价，未扣费用；精确盈亏见 trade_log）
-        avg_cost = self._hold_cost / self._hold_size if self._hold_size > 0 else None
-        profit = round((price - avg_cost) * size, 2) if avg_cost else None
-        profit_rate = round((price - avg_cost) / avg_cost, 4) if avg_cost else None
-        self.action_log.append(
-            {
-                "date": self.data.datetime.date(0),
-                "side": "SELL",
-                "price": price,
-                "size": size,
-                "reason": reason,
-                "avg_cost": round(avg_cost, 4) if avg_cost else None,
-                "profit": profit,
-                "profit_rate": profit_rate,
-            }
-        )
-        self._pending_action_index = len(self.action_log) - 1
+        action_index = len(self.action_log)
+        self.action_log.append(self._new_action_row("SELL", trigger_price, size, reason))
+        self._pending_order = {"ref": order.ref, "side": "SELL", "action_index": action_index, "atr_multiple": None}
         self.exit_reason = reason
+
+    def _process_order_events(self):
+        """在 next() 顶部处理订单终态：成交则回填实际值并初始化/重置持仓状态"""
+        events = self._order_events
+        self._order_events = []
+        for event in events:
+            pending = self._pending_order
+            if pending is None or pending["ref"] != event["ref"]:
+                continue
+            row = self.action_log[pending["action_index"]]
+            if event["status_name"] == "Completed":
+                row["status"] = "FILLED"
+                row["exec_date"] = event["exec_dt"]
+                row["exec_price"] = round(event["exec_price"], 4)
+                row["exec_size"] = event["exec_size"]
+                if event["is_buy"]:
+                    self._init_entry_on_fill(event["exec_price"], event["exec_size"], pending["atr_multiple"])
+                    row["avg_cost"] = round(self._hold_cost / self._hold_size, 4) if self._hold_size else None
+                else:
+                    avg_cost = self._hold_cost / self._hold_size if self._hold_size > 0 else None
+                    row["avg_cost"] = round(avg_cost, 4) if avg_cost else None
+                    self.exit_price = event["exec_price"]
+                    self._reset_position_state()
+            else:
+                # 限价单未成交放弃 / 被拒 / 保证金不足：买入未建仓；卖出失败则保留持仓等下根 bar 重试
+                row["status"] = self._ORDER_FAIL_STATUS.get(event["status_name"], event["status_name"])
+                if not event["is_buy"]:
+                    self.exit_reason = None
+            self._pending_order = None
+
+    def _init_entry_on_fill(self, fill_price, fill_size, atr_multiple):
+        """买单实际成交后初始化持仓状态（成交价、止损/止盈均以成交 bar 数据为准）"""
+        self.entry_size = fill_size
+        self._hold_cost += fill_price * fill_size
+        self._hold_size += fill_size
+        atr_val = self.atr[0]
+        self.entry_price = fill_price
+        self.entry_bar = len(self) - 1
+        self.entry_atr_multiple = atr_multiple
+        self._trail_tightened = False
+        if atr_val is not None and not math.isnan(atr_val) and atr_val > 0:
+            self.stop_price = fill_price - atr_multiple * atr_val
+            if self.p.take_profit_atr_multiple:
+                self.take_price = fill_price + atr_val * self.p.take_profit_atr_multiple
+            else:
+                self.take_price = None
+        else:
+            # 理论不可达（信号通过要求 ATR 有效），防御性兜底
+            self.stop_price = fill_price * 0.9
+            self.take_price = None
+
+    def _reset_position_state(self):
+        """卖出成交后重置全部持仓状态"""
+        self._hold_cost = 0.0
+        self._hold_size = 0
         self.stop_price = None
         self.take_price = None
         self.entry_price = None
@@ -229,6 +310,11 @@ class BaseStrategy(bt.Strategy):
     def next(self):
         # 记录每日净值
         self.equity_log.append({"datetime": self.data.datetime.date(0), "equity": self.broker.getvalue()})
+        # 先处理上一阶段挂单的成交/过期结果（成交时初始化或重置持仓状态）
+        self._process_order_events()
+        # 有在途订单（如等待次日成交的限价单）时，本 bar 不产生新决策
+        if self._pending_order is not None:
+            return
         if not self.position:
             # 全局三重趋势过滤：全部通过才允许子类判断专属入场信号
             if self._entry_filters_ok():

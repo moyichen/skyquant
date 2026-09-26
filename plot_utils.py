@@ -16,12 +16,9 @@ from bokeh.embed import components
 from bokeh.layouts import column
 from bokeh.models import (
     ColumnDataSource,
-    DataTable,
     DatetimeTickFormatter,
     HoverTool,
-    NumberFormatter,
     NumeralTickFormatter,
-    TableColumn,
 )
 from bokeh.plotting import figure
 from bokeh.resources import INLINE
@@ -119,55 +116,6 @@ def _build_equity_plot(equity_df: pd.DataFrame) -> Any:
     return column(p_eq, p_dd, sizing_mode="stretch_width")
 
 
-def _build_trade_table(trades_df: pd.DataFrame) -> Optional[DataTable]:
-    """Build a Bokeh DataTable for closed trades; None when no trades."""
-    if trades_df is None or len(trades_df) == 0:
-        return None
-
-    df = trades_df.copy()
-    for col in ("entry_date", "exit_date"):
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col]).dt.strftime("%Y-%m-%d")
-    df["profit_rate"] = df["profit_rate"].astype(float) * 100.0
-    df["profit_loss_net"] = df["profit_loss_net"].astype(float)
-
-    source = ColumnDataSource(df)
-    columns = [
-        TableColumn(field="entry_date", title="Entry"),
-        TableColumn(field="exit_date", title="Exit"),
-        TableColumn(
-            field="entry_price",
-            title="Entry ¥",
-            formatter=NumberFormatter(format="0.00"),
-        ),
-        TableColumn(
-            field="exit_price",
-            title="Exit ¥",
-            formatter=NumberFormatter(format="0.00"),
-        ),
-        TableColumn(field="size", title="Size"),
-        TableColumn(
-            field="profit_loss_net",
-            title="Net P&L ¥",
-            formatter=NumberFormatter(format="0,0.00"),
-        ),
-        TableColumn(
-            field="profit_rate",
-            title="Return %",
-            formatter=NumberFormatter(format="0.00"),
-        ),
-    ]
-    if "exit_reason" in df.columns:
-        columns.append(TableColumn(field="exit_reason", title="Exit Reason"))
-    return DataTable(
-        source=source,
-        columns=columns,
-        height=300,
-        sizing_mode="stretch_width",
-        index_position=None,
-    )
-
-
 # ===================== Analyzer flattening =====================
 # backtrader uses MAXINT (2**63-1) as the "empty set" sentinel, e.g.
 # TradeAnalyzer.len.{short,...}.min for groups with no trades
@@ -216,50 +164,61 @@ def _flatten_analyzer(obj: Any, prefix: str = "") -> List[Tuple[str, Any]]:
 
 
 # ===================== HTML section builders =====================
-def _build_action_table_html(action_df: Optional[pd.DataFrame]) -> str:
-    """Build an HTML table for action_log (decision-time signal intent)."""
+def _build_signals_fills_html(action_df: Optional[pd.DataFrame]) -> str:
+    """Build the unified Signals & Fills table from the integrated action log.
+
+    One row per signal with both trigger-side info (signal date / trigger close /
+    intended size / reason) and actual execution info (status / fill date / fill
+    price / filled size / avg cost / net P&L), so timing analysis and real
+    results can be read from a single table.
+    """
     if action_df is None or len(action_df) == 0:
-        return "<p class='empty'>No actions recorded.</p>"
+        return "<p class='empty'>No signals recorded.</p>"
 
     df = action_df.copy()
     df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
-    has_reason = "reason" in df.columns
-    has_avg_cost = "avg_cost" in df.columns
-    has_profit = "profit" in df.columns
-    has_exec_size = "exec_size" in df.columns
-    if has_reason:
-        df["reason"] = df["reason"].fillna("")
-    if has_avg_cost:
-        df["avg_cost"] = df["avg_cost"].apply(lambda v: "" if pd.isna(v) else f"{v:.2f}")
-    if has_exec_size:
-        df["exec_size"] = df["exec_size"].apply(lambda v: "" if pd.isna(v) else f"{abs(int(v))}")
-    if has_profit:
-        df["_profit_rate"] = df["profit_rate"].apply(lambda v: "" if pd.isna(v) else f"{v:+.2%}")
-        df["profit"] = df["profit"].apply(lambda v: "" if pd.isna(v) else f"{v:+,.0f}")
+    df["exec_date"] = pd.to_datetime(df["exec_date"]).dt.strftime("%Y-%m-%d")
+    df["reason"] = df["reason"].fillna("")
+
+    def _text(value, spec="{:.2f}"):
+        return "" if pd.isna(value) else spec.format(value)
+
+    def _int_text(value):
+        return "" if pd.isna(value) else f"{int(value)}"
+
+    def _money_text(value):
+        return "" if pd.isna(value) else f"{value:+,.2f}"
+
+    def _pct_text(value):
+        return "" if pd.isna(value) else f"{value:+.2%}"
+
     rows = []
     for _, r in df.iterrows():
         side = str(r.get("side", ""))
         side_class = "side-buy" if side == "BUY" else "side-sell" if side == "SELL" else ""
-        price = r.get("price", "")
-        size = r.get("size", "")
-        reason_cell = f"<td>{r.get('reason', '')}</td>" if has_reason else ""
-        avg_cost_cell = f"<td>{r.get('avg_cost', '')}</td>" if has_avg_cost else ""
-        exec_size_cell = f"<td>{r.get('exec_size', '')}</td>" if has_exec_size else ""
-        if has_profit:
-            profit_txt = f"{r.get('profit', '')} ({r.get('_profit_rate', '')})" if r.get("profit") != "" else ""
-            profit_cell = f"<td>{profit_txt}</td>"
-        else:
-            profit_cell = ""
-        rows.append(f"<tr><td>{r['date']}</td><td class='{side_class}'>{side}</td><td>{price}</td><td>{size}</td>{exec_size_cell}{avg_cost_cell}{profit_cell}{reason_cell}</tr>")
-    headers = "<th>Date</th><th>Side</th><th>Price</th><th>Size</th>"
-    if has_exec_size:
-        headers += "<th>Exec Size</th>"
-    if has_avg_cost:
-        headers += "<th>Avg Cost</th>"
-    if has_profit:
-        headers += "<th>Profit (est)</th>"
-    if has_reason:
-        headers += "<th>Reason</th>"
+        status = str(r.get("status", ""))
+        status_class = {"FILLED": "status-filled", "EXPIRED": "status-expired", "PENDING": "status-pending"}.get(status, "status-failed")
+        profit_txt = "" if pd.isna(r["net_profit_loss"]) else f"{_money_text(r['net_profit_loss'])} ({_pct_text(r['net_return'])})"
+        profit_cell = f"<td>{profit_txt}</td>"
+        rows.append(
+            f"<tr>"
+            f"<td>{r['date']}</td>"
+            f"<td class='{side_class}'>{side}</td>"
+            f"<td>{_text(r['trigger_price'])}</td>"
+            f"<td>{_int_text(r['size'])}</td>"
+            f"<td>{r['reason']}</td>"
+            f"<td class='{status_class}'>{status}</td>"
+            f"<td>{r['exec_date'] if not pd.isna(r['exec_date']) else ''}</td>"
+            f"<td>{_text(r['exec_price'])}</td>"
+            f"<td>{_int_text(r['exec_size'])}</td>"
+            f"<td>{_text(r['avg_cost'])}</td>"
+            f"{profit_cell}"
+            f"</tr>"
+        )
+    headers = (
+        "<th>Signal Date</th><th>Side</th><th>Trigger ¥</th><th>Size</th><th>Reason</th>"
+        "<th>Status</th><th>Fill Date</th><th>Fill ¥</th><th>Filled</th><th>Avg Cost</th><th>Net P&L ¥ (Ret)</th>"
+    )
     return f"<table class='data-table'><thead><tr>{headers}</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
 
 
@@ -309,13 +268,7 @@ def render_report(
 
     # ---- Build Bokeh components ----
     equity_plot = _build_equity_plot(equity_df)
-    trade_table = _build_trade_table(trades_df)
-
-    component_objs: Dict[str, Any] = {"equity_plot": equity_plot}
-    if trade_table is not None:
-        component_objs["trade_table"] = trade_table
-
-    script, divs = components(component_objs)
+    script, divs = components({"equity_plot": equity_plot})
 
     # ---- Build HTML content sections ----
     name_display = f"{stock_name} " if stock_name else ""
@@ -349,7 +302,7 @@ def render_report(
     </div>
     """
 
-    action_html = _build_action_table_html(action_df)
+    signals_fills_html = _build_signals_fills_html(action_df)
     analyzer_html = _build_analyzer_table_html(analyzer_results)
 
     interactive_link = ""
@@ -358,7 +311,6 @@ def render_report(
         interactive_link = f'<div class="section"><div class="section-title">Interactive K-Line Chart</div><p><a href="{rel}" class="btn">Open btplotting K-Line chart &raquo;</a></p></div>'
 
     equity_div = divs.get("equity_plot", "")
-    trade_table_div = divs.get("trade_table", "<p class='empty'>No closed trades.</p>")
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -395,6 +347,10 @@ body {{
 .data-table tr:hover {{ background: #1a2332; }}
 .side-buy {{ color: #57CC99; font-weight: 600; }}
 .side-sell {{ color: #F38181; font-weight: 600; }}
+.status-filled {{ color: #57CC99; }}
+.status-expired {{ color: #f0ad4e; }}
+.status-pending {{ color: #888; }}
+.status-failed {{ color: #F38181; }}
 .btn {{ display: inline-block; padding: 8px 16px; background: #2E86AB; color: #fff !important; text-decoration: none; border-radius: 4px; font-size: 13px; }}
 .btn:hover {{ background: #1f6a8b; }}
 .bk-pane {{ background: transparent !important; }}
@@ -423,13 +379,8 @@ footer {{ margin-top: 40px; padding-top: 20px; border-top: 1px solid #2a3548; fo
   </div>
 
   <div class="section">
-    <div class="section-title">Trade Detail (Closed Positions)</div>
-    {trade_table_div}
-  </div>
-
-  <div class="section">
-    <div class="section-title">Action Log (Signal Intent)</div>
-    {action_html}
+    <div class="section-title">Signals &amp; Fills (trigger signal vs actual execution)</div>
+    {signals_fills_html}
   </div>
 
   <div class="section">

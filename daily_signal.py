@@ -107,23 +107,32 @@ def classify_signal(action_df: pd.DataFrame, last_bar_date) -> dict:
             "last_signal_side": None,
             "last_signal_price": None,
             "last_signal_reason": None,
+            "last_signal_status": None,
+            "last_signal_exec_date": None,
+            "last_signal_exec_price": None,
             "strategy_in_position": False,
             "strategy_action": "WAIT",
         }
     last_row = action_df.iloc[-1]
-    num_buys = (action_df["side"] == "BUY").sum()
-    num_sells = (action_df["side"] == "SELL").sum()
+    # Position only counts actually FILLED orders (limit buys may expire unfilled)
+    num_buys = ((action_df["side"] == "BUY") & (action_df["status"] == "FILLED")).sum()
+    num_sells = ((action_df["side"] == "SELL") & (action_df["status"] == "FILLED")).sum()
     in_position = num_buys > num_sells
     if last_row["date"] == last_bar_date:
         action = last_row["side"]
     else:
         action = "HOLD" if in_position else "WAIT"
-    reason = last_row["reason"] if "reason" in action_df.columns else None
+    reason = last_row.get("reason")
+    exec_date = last_row.get("exec_date")
+    exec_price = last_row.get("exec_price")
     return {
         "last_signal_date": last_row["date"],
         "last_signal_side": last_row["side"],
-        "last_signal_price": last_row["price"],
+        "last_signal_price": last_row["trigger_price"],
         "last_signal_reason": reason if pd.notna(reason) else None,
+        "last_signal_status": last_row.get("status"),
+        "last_signal_exec_date": exec_date if pd.notna(exec_date) else None,
+        "last_signal_exec_price": exec_price if pd.notna(exec_price) else None,
         "strategy_in_position": in_position,
         "strategy_action": action,
     }
@@ -195,6 +204,9 @@ def build_report_rows(
                     "last_signal_side": signal["last_signal_side"],
                     "last_signal_price": signal["last_signal_price"],
                     "last_signal_reason": signal["last_signal_reason"],
+                    "last_signal_status": signal["last_signal_status"],
+                    "last_signal_exec_date": signal["last_signal_exec_date"],
+                    "last_signal_exec_price": signal["last_signal_exec_price"],
                     "strategy_in_position": signal["strategy_in_position"],
                     "strategy_action": signal["strategy_action"],
                     "currently_held": held,
@@ -217,6 +229,9 @@ def build_report_rows(
                     "last_signal_side": None,
                     "last_signal_price": None,
                     "last_signal_reason": None,
+                    "last_signal_status": None,
+                    "last_signal_exec_date": None,
+                    "last_signal_exec_price": None,
                     "strategy_in_position": None,
                     "strategy_action": None,
                     "currently_held": held,

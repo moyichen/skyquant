@@ -1,73 +1,5 @@
 {
   "cases": {
-    "000001|boll_ma": {
-      "bars": 660,
-      "final_value": 100000.0,
-      "n_buys": 0,
-      "n_sells": 0,
-      "n_trades": 0,
-      "n_wins": 0,
-      "params": {
-        "boll_period": 20,
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 1.6
-      },
-      "total_return": 0.0
-    },
-    "000001|momentum": {
-      "bars": 660,
-      "final_value": 86603.3353,
-      "n_buys": 11,
-      "n_sells": 11,
-      "n_trades": 11,
-      "n_wins": 2,
-      "params": {
-        "max_risk_ratio": 0.02,
-        "momentum_period": 20,
-        "trail_atr_multiple": 1.5
-      },
-      "total_return": -0.133967
-    },
-    "000001|multi_factor": {
-      "bars": 660,
-      "final_value": 87791.1301,
-      "n_buys": 10,
-      "n_sells": 10,
-      "n_trades": 10,
-      "n_wins": 3,
-      "params": {
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 1.7
-      },
-      "total_return": -0.122089
-    },
-    "000001|short_reversal": {
-      "bars": 660,
-      "final_value": 100000.0,
-      "n_buys": 0,
-      "n_sells": 0,
-      "n_trades": 0,
-      "n_wins": 0,
-      "params": {
-        "drop_ratio": 0.18,
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 2.0
-      },
-      "total_return": 0.0
-    },
-    "000001|trend_follow": {
-      "bars": 660,
-      "final_value": 90191.7706,
-      "n_buys": 10,
-      "n_sells": 10,
-      "n_trades": 10,
-      "n_wins": 3,
-      "params": {
-        "max_risk_ratio": 0.015,
-        "trail_atr_multiple": 1.6
-      },
-      "total_return": -0.098082
-    },
     "000725|boll_ma": {
       "bars": 660,
       "final_value": 100000.0,
@@ -84,22 +16,22 @@
     },
     "000725|momentum": {
       "bars": 660,
-      "final_value": 105539.1948,
-      "n_buys": 18,
+      "final_value": 104237.4621,
+      "n_buys": 21,
       "n_sells": 18,
       "n_trades": 18,
-      "n_wins": 5,
+      "n_wins": 6,
       "params": {
         "max_risk_ratio": 0.02,
         "momentum_period": 20,
         "trail_atr_multiple": 1.5
       },
-      "total_return": 0.055392
+      "total_return": 0.042375
     },
     "000725|multi_factor": {
       "bars": 660,
-      "final_value": 103525.9535,
-      "n_buys": 17,
+      "final_value": 102488.287,
+      "n_buys": 20,
       "n_sells": 17,
       "n_trades": 17,
       "n_wins": 5,
@@ -107,7 +39,7 @@
         "max_risk_ratio": 0.02,
         "trail_atr_multiple": 1.7
       },
-      "total_return": 0.03526
+      "total_return": 0.024883
     },
     "000725|short_reversal": {
       "bars": 660,
@@ -125,8 +57,8 @@
     },
     "000725|trend_follow": {
       "bars": 660,
-      "final_value": 102352.6783,
-      "n_buys": 17,
+      "final_value": 101530.0454,
+      "n_buys": 20,
       "n_sells": 17,
       "n_trades": 17,
       "n_wins": 5,
@@ -134,211 +66,7 @@
         "max_risk_ratio": 0.015,
         "trail_atr_multiple": 1.6
       },
-      "total_return": 0.023527
-    },
-    "002222|boll_ma": {
-      "bars": 660,
-      "final_value": 100000.0,
-      "n_buys": 0,
-      "n_sells": 0,
-      "n_trades": 0,
-      "n_wins": 0,
-      "params": {
-        "boll_period": 20,
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 1.6
-      },
-      "total_return": 0.0
-    },
-    "002222|momentum": {
-      "bars": 660,
-      "final_value": 114015.932,
-      "n_buys": 18,
-      "n_sells": 17,
-      "n_trades": 17,
-      "n_wins": 6,
-      "params": {
-        "max_risk_ratio": 0.02,
-        "momentum_period": 20,
-        "trail_atr_multiple": 1.5
-      },
-      "total_return": 0.140159
-    },
-    "002222|multi_factor": {
-      "bars": 660,
-      "final_value": 108253.0499,
-      "n_buys": 18,
-      "n_sells": 17,
-      "n_trades": 17,
-      "n_wins": 6,
-      "params": {
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 1.7
-      },
-      "total_return": 0.08253
-    },
-    "002222|short_reversal": {
-      "bars": 660,
-      "final_value": 100000.0,
-      "n_buys": 0,
-      "n_sells": 0,
-      "n_trades": 0,
-      "n_wins": 0,
-      "params": {
-        "drop_ratio": 0.18,
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 2.0
-      },
-      "total_return": 0.0
-    },
-    "002222|trend_follow": {
-      "bars": 660,
-      "final_value": 105936.1108,
-      "n_buys": 19,
-      "n_sells": 18,
-      "n_trades": 18,
-      "n_wins": 6,
-      "params": {
-        "max_risk_ratio": 0.015,
-        "trail_atr_multiple": 1.6
-      },
-      "total_return": 0.059361
-    },
-    "600111|boll_ma": {
-      "bars": 660,
-      "final_value": 100000.0,
-      "n_buys": 0,
-      "n_sells": 0,
-      "n_trades": 0,
-      "n_wins": 0,
-      "params": {
-        "boll_period": 20,
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 1.6
-      },
-      "total_return": 0.0
-    },
-    "600111|momentum": {
-      "bars": 660,
-      "final_value": 99175.4404,
-      "n_buys": 16,
-      "n_sells": 16,
-      "n_trades": 16,
-      "n_wins": 5,
-      "params": {
-        "max_risk_ratio": 0.02,
-        "momentum_period": 20,
-        "trail_atr_multiple": 1.5
-      },
-      "total_return": -0.008246
-    },
-    "600111|multi_factor": {
-      "bars": 660,
-      "final_value": 96403.5463,
-      "n_buys": 15,
-      "n_sells": 15,
-      "n_trades": 15,
-      "n_wins": 5,
-      "params": {
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 1.7
-      },
-      "total_return": -0.035965
-    },
-    "600111|short_reversal": {
-      "bars": 660,
-      "final_value": 100000.0,
-      "n_buys": 0,
-      "n_sells": 0,
-      "n_trades": 0,
-      "n_wins": 0,
-      "params": {
-        "drop_ratio": 0.18,
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 2.0
-      },
-      "total_return": 0.0
-    },
-    "600111|trend_follow": {
-      "bars": 660,
-      "final_value": 99876.1751,
-      "n_buys": 15,
-      "n_sells": 15,
-      "n_trades": 15,
-      "n_wins": 5,
-      "params": {
-        "max_risk_ratio": 0.015,
-        "trail_atr_multiple": 1.6
-      },
-      "total_return": -0.001238
-    },
-    "601127|boll_ma": {
-      "bars": 660,
-      "final_value": 100000.0,
-      "n_buys": 0,
-      "n_sells": 0,
-      "n_trades": 0,
-      "n_wins": 0,
-      "params": {
-        "boll_period": 20,
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 1.6
-      },
-      "total_return": 0.0
-    },
-    "601127|momentum": {
-      "bars": 660,
-      "final_value": 102898.4658,
-      "n_buys": 10,
-      "n_sells": 10,
-      "n_trades": 10,
-      "n_wins": 3,
-      "params": {
-        "max_risk_ratio": 0.02,
-        "momentum_period": 20,
-        "trail_atr_multiple": 1.5
-      },
-      "total_return": 0.028985
-    },
-    "601127|multi_factor": {
-      "bars": 660,
-      "final_value": 102955.1528,
-      "n_buys": 9,
-      "n_sells": 9,
-      "n_trades": 9,
-      "n_wins": 3,
-      "params": {
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 1.7
-      },
-      "total_return": 0.029552
-    },
-    "601127|short_reversal": {
-      "bars": 660,
-      "final_value": 100000.0,
-      "n_buys": 0,
-      "n_sells": 0,
-      "n_trades": 0,
-      "n_wins": 0,
-      "params": {
-        "drop_ratio": 0.18,
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 2.0
-      },
-      "total_return": 0.0
-    },
-    "601127|trend_follow": {
-      "bars": 660,
-      "final_value": 103441.4852,
-      "n_buys": 9,
-      "n_sells": 9,
-      "n_trades": 9,
-      "n_wins": 3,
-      "params": {
-        "max_risk_ratio": 0.015,
-        "trail_atr_multiple": 1.6
-      },
-      "total_return": 0.034415
+      "total_return": 0.0153
     }
   },
   "meta": {
@@ -346,12 +74,8 @@
     "initial_capital": 100000.0,
     "start_date": "20240101",
     "stocks": [
-      "000725",
-      "000001",
-      "600111",
-      "002222",
-      "601127"
+      "000725"
     ],
-    "updated_at": "2026-09-25 23:51:29"
+    "updated_at": "2026-09-26 14:50:02"
   }
 }
