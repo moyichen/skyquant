@@ -69,6 +69,32 @@ def calc_equity_metrics(equity_df: pd.DataFrame, risk_free_rate: float = 0.02) -
     }
 
 
+def evaluate_sharpe(value: float) -> str:
+    """Plain-language rating for the Sharpe ratio."""
+    if value < 0:
+        return "很差：不如无风险理财"
+    if value < 1:
+        return "一般：收益勉强覆盖风险"
+    if value < 1.5:
+        return "尚可：承担风险有合理回报"
+    if value < 2:
+        return "优秀：单位风险收益很好"
+    return "非常优秀；⚠️回测里大于2要警惕过拟合"
+
+
+def evaluate_calmar(value: float) -> str:
+    """Plain-language rating for the Calmar ratio."""
+    if value < 0:
+        return "不行：年化收益为负"
+    if value < 0.5:
+        return "一般：回撤大，持有体验差"
+    if value < 1:
+        return "尚可：趋势策略常见区间"
+    if value < 2:
+        return "优秀：赚得多，深坑可控"
+    return "非常优秀；⚠️大于2要警惕过拟合"
+
+
 def normalize_exit_reason(reason: Any) -> str:
     """Map a raw strategy exit_reason string to a freqtrade-style exit category.
 
@@ -492,6 +518,8 @@ def _build_strategy_summary_html(metrics: dict) -> str:
         ("Best / Worst Day", f"{signed_pct(metrics['best_day'])} / {signed_pct(metrics['worst_day'])}"),
         ("Daily Win / Loss / Flat", f"{metrics['winning_days']} / {metrics['losing_days']} / {metrics['zero_days']}"),
         ("Sharpe / Sortino / Calmar", f"{_fmt_num(metrics['sharpe_ratio'])} / {_fmt_num(metrics['sortino_ratio'])} / {_fmt_num(metrics['calmar_ratio'])}"),
+        ("Sharpe Rating", evaluate_sharpe(metrics["sharpe_ratio"])),
+        ("Calmar Rating", evaluate_calmar(metrics["calmar_ratio"])),
         ("Buy &amp; Hold (market change)", signed_pct(metrics.get("market_change"))),
         ("Alpha vs Buy &amp; Hold", signed_pct(metrics.get("alpha_vs_buyhold"))),
     ]
@@ -615,6 +643,7 @@ def render_report(
     <div class="kpi-card">
       <div class="kpi-label">Sharpe</div>
       <div class="kpi-value">{_fmt_num(metrics["sharpe_ratio"])}</div>
+      <div class="kpi-note">{evaluate_sharpe(metrics["sharpe_ratio"])}</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-label">Sortino</div>
@@ -623,6 +652,7 @@ def render_report(
     <div class="kpi-card">
       <div class="kpi-label">Calmar</div>
       <div class="kpi-value">{_fmt_num(metrics["calmar_ratio"])}</div>
+      <div class="kpi-note">{evaluate_calmar(metrics["calmar_ratio"])}</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-label">Win Rate</div>
@@ -674,6 +704,7 @@ body {{
 .kpi-value {{ font-size: 24px; font-weight: 600; margin-top: 6px; color: #fff; }}
 .kpi-value.positive {{ color: #57CC99; }}
 .kpi-value.negative {{ color: #F38181; }}
+.kpi-note {{ font-size: 11px; margin-top: 6px; color: #aaa; line-height: 1.5; }}
 .section {{ margin-bottom: 30px; }}
 .section-title {{ font-size: 16px; font-weight: 600; color: #fff; border-bottom: 1px solid #2a3548; padding-bottom: 6px; margin-bottom: 12px; }}
 .empty {{ color: #888; font-style: italic; padding: 12px; }}
