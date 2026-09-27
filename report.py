@@ -18,16 +18,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from backtrader.utils.py3 import MAXINT
-from bokeh.embed import components
-from bokeh.layouts import column
-from bokeh.models import (
-    ColumnDataSource,
-    DatetimeTickFormatter,
-    HoverTool,
-    NumeralTickFormatter,
-)
-from bokeh.plotting import figure
-from bokeh.resources import INLINE
 
 
 # ===================== Metrics =====================
@@ -293,72 +283,137 @@ def _fmt_money(value: Any, digits: int = 2) -> str:
     return f"¥{value:,.{digits}f}"
 
 
-# ===================== Bokeh component builders =====================
-def _build_equity_plot(equity_df: pd.DataFrame) -> Any:
-    """Build a Bokeh column layout: equity curve above + drawdown below."""
+# ===================== Chart builders =====================
+def _build_equity_chart_html(equity_df: pd.DataFrame, initial_capital: float) -> str:
+    """Build the equity-curve + drawdown chart as a self-contained Plotly HTML fragment.
+
+    Dark theme, colors and range-selector buttons are aligned with the Plotly
+    interactive K-line chart (render_interactive_chart) so the two visuals look
+    like one product. A dashed initial-capital reference line on the equity row
+    makes the gap to the starting capital obvious.
+    plotly.js is inlined (self-contained report, openable offline).
+    """
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
     df = equity_df.copy()
     df["datetime"] = pd.to_datetime(df["datetime"])
-    df["cum_max"] = df["equity"].cummax()
-    df["drawdown_pct"] = (df["equity"] - df["cum_max"]) / df["cum_max"] * 100.0
+    df["drawdown"] = (df["equity"] - df["equity"].cummax()) / df["equity"].cummax()
 
-    source = ColumnDataSource(df)
-
-    # ---- Equity curve ----
-    p_eq = figure(
-        x_axis_type="datetime",
-        height=350,
-        sizing_mode="stretch_width",
-        title="Equity Curve",
-        tools="pan,wheel_zoom,box_zoom,reset,save",
-        active_scroll="wheel_zoom",
-        toolbar_location="above",
-    )
-    p_eq.toolbar.logo = None
-    p_eq.line("datetime", "equity", source=source, line_width=2, color="#2E86AB")
-    p_eq.yaxis.axis_label = "Equity (¥)"
-    p_eq.yaxis.formatter = NumeralTickFormatter(format="0,0.00")
-    p_eq.xaxis.formatter = DatetimeTickFormatter(days="%Y-%m-%d")
-    p_eq.grid.grid_line_alpha = 0.3
-    p_eq.add_tools(
-        HoverTool(
-            tooltips=[("Date", "@datetime{%F}"), ("Equity", "@equity{0,0.00}")],
-            formatters={"@datetime": "datetime"},
-        )
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.04,
+        row_heights=[0.68, 0.32],
     )
 
-    # ---- Drawdown (linked x-axis) ----
-    p_dd = figure(
-        x_axis_type="datetime",
-        height=180,
-        sizing_mode="stretch_width",
-        title="Drawdown",
-        tools="pan,wheel_zoom,box_zoom,reset,save",
-        active_scroll="wheel_zoom",
-        toolbar_location="above",
-        x_range=p_eq.x_range,
+    # ---- Equity row: curve only (no fill-to-zero: that fill forces the y-axis
+    # to include 0 and leaves most of the panel empty; tight autorange makes the
+    # curve fill the window instead) ----
+    fig.add_trace(
+        go.Scatter(
+            x=df["datetime"],
+            y=df["equity"],
+            mode="lines",
+            name="Equity",
+            line=dict(color="#4FC3F7", width=2),
+            hovertemplate="Equity: ¥%{y:,.2f}<extra></extra>",
+        ),
+        row=1,
+        col=1,
     )
-    p_dd.toolbar.logo = None
-    p_dd.varea(
-        "datetime",
-        y1=0,
-        y2="drawdown_pct",
-        source=source,
-        color="#A23B72",
-        alpha=0.5,
+    # ---- Initial capital reference line ----
+    fig.add_hline(
+        y=float(initial_capital),
+        line_dash="dash",
+        line_color="#F5B041",
+        line_width=1.2,
+        annotation_text=f"Initial Capital ¥{initial_capital:,.0f}",
+        annotation_position="top left",
+        annotation_font_color="#F5B041",
+        annotation_font_size=11,
+        row=1,
+        col=1,
     )
-    p_dd.line("datetime", "drawdown_pct", source=source, line_width=1, color="#A23B72")
-    p_dd.yaxis.axis_label = "Drawdown (%)"
-    p_dd.yaxis.formatter = NumeralTickFormatter(format="0.0")
-    p_dd.xaxis.formatter = DatetimeTickFormatter(days="%Y-%m-%d")
-    p_dd.grid.grid_line_alpha = 0.3
-    p_dd.add_tools(
-        HoverTool(
-            tooltips=[("Date", "@datetime{%F}"), ("Drawdown", "@drawdown_pct{0.00}%")],
-            formatters={"@datetime": "datetime"},
-        )
+    # Shapes do not participate in autorange, so anchor the initial-capital
+    # level with an invisible trace: the y-axis always includes the reference
+    # line (even when equity never crosses it) while staying tightly fitted.
+    fig.add_trace(
+        go.Scatter(
+            x=df["datetime"],
+            y=[initial_capital] * len(df),
+            mode="lines",
+            line=dict(color="rgba(0,0,0,0)", width=0),
+            hoverinfo="skip",
+            showlegend=False,
+        ),
+        row=1,
+        col=1,
     )
 
-    return column(p_eq, p_dd, sizing_mode="stretch_width")
+    # ---- Drawdown row: red filled area ----
+    fig.add_trace(
+        go.Scatter(
+            x=df["datetime"],
+            y=df["drawdown"],
+            mode="lines",
+            name="Drawdown",
+            line=dict(color="#F38181", width=1.3),
+            fillcolor="rgba(243,129,129,0.22)",
+            fill="tozeroy",
+            hovertemplate="Drawdown: %{y:.2%}<extra></extra>",
+        ),
+        row=2,
+        col=1,
+    )
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#0F1419",
+        plot_bgcolor="#141C28",
+        font=dict(color="#D4D4D4", size=11),
+        height=520,
+        margin=dict(l=70, r=30, t=20, b=40),
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor="#1A2332", font_size=11),
+        # Legend lives inside the equity row (bottom-right, usually empty for
+        # equity curves) so it never collides with the range-selector buttons.
+        legend=dict(orientation="h", yanchor="bottom", y=0.40, xanchor="right", x=0.99,
+                    bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+        xaxis_rangeslider_visible=False,
+    )
+
+    fig.update_yaxes(title_text="Equity (¥)", tickformat=",.0f", row=1, col=1)
+    fig.update_yaxes(title_text="Drawdown", tickformat=".1%", row=2, col=1)
+    fig.update_xaxes(
+        rangebreaks=[dict(bounds=["sat", "mon"])],
+        showgrid=True,
+        gridcolor="#2A3548",
+        rangeslider=dict(visible=False),
+        rangeselector=dict(
+            buttons=list([
+                dict(count=1, label="1M", step="month", stepmode="backward"),
+                dict(count=3, label="3M", step="month", stepmode="backward"),
+                dict(count=6, label="6M", step="month", stepmode="backward"),
+                dict(count=1, label="1Y", step="year", stepmode="backward"),
+                dict(step="all", label="All"),
+            ]),
+            bgcolor="#1A2332",
+            activecolor="#2E86AB",
+            font=dict(color="#D4D4D4"),
+        ),
+        row=1,
+        col=1,
+    )
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])], gridcolor="#2A3548", row=2, col=1)
+    fig.update_yaxes(gridcolor="#2A3548", zerolinecolor="#2A3548")
+
+    return fig.to_html(
+        include_plotlyjs=True,
+        full_html=False,
+        config={"scrollZoom": True, "displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "select2d"]},
+    )
 
 
 # ===================== Analyzer flattening =====================
@@ -493,8 +548,14 @@ def _build_exit_reason_table_html(exit_reason_df: pd.DataFrame) -> str:
     )
 
 
-def _build_strategy_summary_html(metrics: dict, regime: Optional[str] = None, sector_info: Optional[dict] = None) -> str:
-    """freqtrade SUMMARY METRICS as a two-column key/value table."""
+def _build_strategy_summary_html(metrics: dict, regime: Optional[str] = None) -> str:
+    """freqtrade SUMMARY METRICS as a two-column key/value table.
+
+    Only metrics NOT already shown as KPI cards above are listed here
+    (annual return / max drawdown / Sharpe / Sortino / Calmar / win rate /
+    profit factor / total trades are intentionally omitted).
+    Sector is shown in the report header, so it is not repeated here.
+    """
     def signed_pct(value, digits=2):
         if value is None or pd.isna(value):
             return "N/A"
@@ -510,24 +571,14 @@ def _build_strategy_summary_html(metrics: dict, regime: Optional[str] = None, se
     rows = []
     if regime:
         rows.append(("Market Regime (前置筛选)", f"{regime} &rarr; 路由策略"))
-    if sector_info and sector_info.get("sector"):
-        idx_part = ""
-        if sector_info.get("sector_index"):
-            idx_part = f" &middot; {sector_info.get('sector_index_name') or ''} ({sector_info['sector_index']})"
-        rows.append(("Sector (所属板块)", f"{sector_info['sector']}{idx_part}"))
     rows += [
-        ("Total / Win / Draw / Loss", f"{metrics['total_trades']} / {metrics['n_wins']} / {metrics['n_draws']} / {metrics['n_losses']}"),
-        ("Win Rate", _fmt_pct(metrics["win_rate"])),
-        ("Profit Factor", _fmt_num(metrics["profit_factor"])),
+        ("Win / Draw / Loss Trades", f"{metrics['n_wins']} / {metrics['n_draws']} / {metrics['n_losses']}"),
         ("Expectancy / Ratio", f"{signed_money(metrics['expectancy'])} / {_fmt_num(metrics['expectancy_ratio'])}"),
         ("Best / Worst Trade", f"{signed_money(metrics['best_trade'])} / {signed_money(metrics['worst_trade'])}"),
         ("Avg Duration (all / win / loss)", f"{metrics['avg_duration_days']}d / {metrics['avg_win_duration_days']}d / {metrics['avg_loss_duration_days']}d"),
         ("Max Consecutive Win / Loss", f"{metrics['max_win_streak']} / {metrics['max_loss_streak']}"),
         ("Best / Worst Day", f"{signed_pct(metrics['best_day'])} / {signed_pct(metrics['worst_day'])}"),
         ("Daily Win / Loss / Flat", f"{metrics['winning_days']} / {metrics['losing_days']} / {metrics['zero_days']}"),
-        ("Sharpe / Sortino / Calmar", f"{_fmt_num(metrics['sharpe_ratio'])} / {_fmt_num(metrics['sortino_ratio'])} / {_fmt_num(metrics['calmar_ratio'])}"),
-        ("Sharpe Rating", evaluate_sharpe(metrics["sharpe_ratio"])),
-        ("Calmar Rating", evaluate_calmar(metrics["calmar_ratio"])),
         ("Buy &amp; Hold (market change)", signed_pct(metrics.get("market_change"))),
         ("Alpha vs Buy &amp; Hold", signed_pct(metrics.get("alpha_vs_buyhold"))),
     ]
@@ -698,18 +749,17 @@ def render_report(
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"{code}_{strategy_name}_report.html")
 
-    # ---- Build Bokeh components ----
-    equity_plot = _build_equity_plot(equity_df)
-    script, divs = components({"equity_plot": equity_plot})
+    # ---- Build Plotly equity/drawdown chart fragment (plotly.js inlined) ----
+    equity_chart_html = _build_equity_chart_html(equity_df, initial_capital)
 
     # ---- freqtrade-aligned tables ----
     exit_reason_df = summarize_exit_reasons(trades_df)
     exit_reason_html = _build_exit_reason_table_html(exit_reason_df)
-    strategy_summary_html = _build_strategy_summary_html(metrics, regime=regime, sector_info=sector_info)
+    strategy_summary_html = _build_strategy_summary_html(metrics, regime=regime)
     monthly_html = _build_monthly_returns_html(equity_df)
     sector_index_html = _build_sector_index_html(sector_info, index_df, price_df)
 
-    # ---- Build HTML content sections ----
+    # ---- Header / KPI values ----
     name_display = f"{stock_name} " if stock_name else ""
     total_return = (final_value / initial_capital - 1) if initial_capital else 0.0
     total_return_color = "#57CC99" if total_return >= 0 else "#F38181"
@@ -759,14 +809,11 @@ def render_report(
         rel = os.path.basename(interactive_html)
         interactive_link = f'<div class="section"><div class="section-title">Interactive K-Line Chart</div><p><a href="{rel}" class="btn">Open Plotly trades chart &raquo;</a></p></div>'
 
-    equity_div = divs.get("equity_plot", "")
-
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>SkyQuant Report - {code} {strategy_name}</title>
-{INLINE.render()}
 <style>
 * {{ box-sizing: border-box; }}
 body {{
@@ -807,7 +854,6 @@ body {{
 .monthly-table th, .monthly-table td {{ text-align: center; font-size: 12px; padding: 6px 4px; }}
 .monthly-table .year-cell, .monthly-table th:first-child {{ text-align: left; font-weight: 600; background: #1a2332; }}
 .monthly-table .month-cell.na {{ color: #555; }}
-.bk-pane {{ background: transparent !important; }}
 footer {{ margin-top: 40px; padding-top: 20px; border-top: 1px solid #2a3548; font-size: 12px; color: #666; }}
 </style>
 </head>
@@ -825,18 +871,18 @@ footer {{ margin-top: 40px; padding-top: 20px; border-top: 1px solid #2a3548; fo
     </div>
   </div>
 
+  {sector_index_html}
+
   <div class="kpi-grid">{kpi_cards}</div>
+
+  <div class="section">
+    <div class="section-title">Equity Curve &amp; Drawdown</div>
+    {equity_chart_html}
+  </div>
 
   <div class="section">
     <div class="section-title">Strategy Summary</div>
     {strategy_summary_html}
-  </div>
-
-  {sector_index_html}
-
-  <div class="section">
-    <div class="section-title">Equity Curve &amp; Drawdown</div>
-    {equity_div}
   </div>
 
   <div class="section">
@@ -864,7 +910,6 @@ footer {{ margin-top: 40px; padding-top: 20px; border-top: 1px solid #2a3548; fo
   <footer>Generated by SkyQuant &middot; Report path: {out_path}</footer>
 
 </div>
-{script}
 </body>
 </html>
 """

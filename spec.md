@@ -282,16 +282,15 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 每标的每策略输出两个 HTML 文件至 `output/plots/`：
 
-1. `{code}_{strategy_id}_report.html` — 自包含 HTML 回测报表（Bokeh INLINE 资源，可离线打开），包含：
-   - 头部：标的名/代码、策略 id、回测区间、初始资金、最终净值、总收益率
+1. `{code}_{strategy_id}_report.html` — 自包含 HTML 回测报表（plotly.js 内联，可离线打开），区块顺序：头部 → 板块指数 → 8 张 KPI 卡片 → Equity Curve & Drawdown → Strategy Summary → Exit Reason → Monthly Returns → Signals & Fills → Analyzer → K 线图链接：
+   - 头部：标的名/代码、策略 id（格式 `名称 (代码) — Strategy: 策略`，不含板块；板块在「板块指数」区块展示）、回测区间、初始资金、最终净值、总收益率
+   - 板块指数 (Sector Index) 区块（位于最前、KPI 卡片之上）：板块/指数/代码/最新日期/最新点位/当日涨跌/回测窗口涨跌/近 20 交易日涨跌/标的窗口涨跌/相对强弱（标的−板块，涨红跌绿）；标的未配置 sector_index 或指数数据不可用时该区块跳过或降级为提示
    - 8 张 KPI 卡片：年化收益、最大回撤、Sharpe、Sortino、Calmar、胜率、盈亏比、总交易数
-   - Strategy Summary 表：表首为 Market Regime（前置筛选 regime 标签 → 路由策略）与 Sector（所属板块 + 板块指数名/代码，来自 config.yaml `stock_list` 条目的 sector/sector_index/sector_index_name）；其后为胜负平、期望值、最佳/最差交易、持仓时长、连胜连亏、日度统计、B&H 与 alpha（freqtrade SUMMARY METRICS）
-   - 板块指数 (Sector Index) 区块：板块/指数/代码/最新日期/最新点位/当日涨跌/回测窗口涨跌/近 20 交易日涨跌/标的窗口涨跌/相对强弱（标的−板块，涨红跌绿）；标的未配置 sector_index 或指数数据不可用时该区块跳过或降级为提示
-   - 净值曲线 \+ 回撤联动图（Bokeh，共享 x 轴，hover tooltip）
+   - 净值曲线 \+ 回撤联动图（Plotly 暗色主题，与交互 K 线图同一配色体系：#0F1419/#141C28 背景、#4FC3F7 净值线、#F38181 回撤填充；共享 x 轴、x-unified hover、1M/3M/6M/1Y/All 按钮、周末 rangebreak）。净值行有琥珀色虚线 **Initial Capital 初始资金水平线**（含金额标注）；**净值 trace 不用 fill-to-zero**（该填充会强制 y 轴包含 0、曲线被压扁），y 轴紧贴净值+本金数据自动取范围使曲线撑满窗口；hline 形状不参与 autorange，本金线另用一条透明 trace 锚定范围。回撤行仍 fill-to-zero（相对 0 填充正确）
+   - Strategy Summary 表：Market Regime 行 + 仅列 KPI 卡片未展示的指标（胜负平笔数、期望值、最佳/最差交易、持仓时长、连胜连亏、日度统计、B&H 与 alpha；年化/回撤/Sharpe/Sortino/Calmar/胜率/盈亏比/总交易数不在此重复）
    - Exit Reason Stats 表：四类平仓原因的笔数/胜率/均持时/盈亏聚合
    - Monthly Returns 月度收益热力表（年×12 月，正绿负红）
-   - 平仓交易 DataTable（Bokeh，含 NumberFormatter 金额/百分比格式）
-   - action\_log 信号表（HTML table，BUY 绿/SELL 红，含未平仓 BUY）
+   - Signals &amp; Fills 统一表（HTML table）：每个信号一行，同时列触发侧（信号日/触发收盘价/拟下单手数/reason）与成交侧（状态/成交日/成交价/成交量/持仓均价/净盈亏），BUY 绿 SELL 红，含未平仓 BUY
    - Analyzer 字段表（递归压平 5 个 analyzer 的 namedtuple/dict/list）
    - Plotly K 线交互图相对链接
 
@@ -437,7 +436,6 @@ backtrader
 pandas
 numpy
 pyyaml
-bokeh
 plotly
 tushare
 scipy

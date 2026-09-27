@@ -407,8 +407,8 @@ def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, t
 
 **render_report 设计**：
 
-- 使用 Bokeh `components()` + `INLINE` 资源输出自包含 HTML，可离线打开
-- 内部模块：`_build_equity_plot`（净值图 + 联动 x 轴的回撤 varea 填充）、`_build_trade_table`（DataTable + `NumberFormatter`）、`_flatten_analyzer`（递归压平 namedtuple/dict/list 到 `(path, value)` 对）、`_build_action_table_html`、`_build_analyzer_table_html`
+- 使用 Plotly `fig.to_html(include_plotlyjs=True, full_html=False)` 输出自包含 HTML（plotly.js 内联），可离线打开；全项目已移除 Bokeh 依赖
+- 内部模块：`_build_equity_chart_html`（Plotly 暗色主题净值+回撤双子图：#4FC3F7 净值线、#F5B041 虚线 Initial Capital 初始资金水平线、#F38181 回撤填充；净值 trace 禁止 fill-to-zero——会压扁曲线，y 轴紧贴数据，本金线用透明 trace 锚定 autorange；1M/3M/6M/1Y/All 按钮）、`_build_signals_fills_html`（信号-成交统一表）、`_flatten_analyzer`（递归压平 namedtuple/dict/list 到 `(path, value)` 对）、`_build_strategy_summary_html`（去重：KPI 卡片已列指标不重复）、`_build_sector_index_html`（区块置于报告最前、KPI 之上）、`_build_analyzer_table_html`
 - 调用方（main.py）注册 5 个 analyzer：`Returns / SharpeRatio / DrawDown / TradeAnalyzer / SQN`，名称见 `ANALYZER_NAMES` 常量；`getattr(strategy_instance.analyzers, name).get_analysis()` 提取后传入 `analyzer_results`
 - 产物：`output/plots/{code}_{strategy_name}_report.html`，相对链接到 `_{strategy_name}_interactive.html`（Plotly 交互图）
 - **交互图已从 btplotting 迁移到 Plotly（freqtrade 风格）**：`render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, trades_df, stock_name=None)`，自包含 HTML（plotly.js 内联）。行布局：K 线主图（红涨绿跌实心蜡烛 + 策略指标覆盖层 + 进出场标记）+ 成交量 + ATR + **MACD（所有策略；trend 用指标线 macd/macdsignal/macdhist，range/breakout 由 `_compute_macd_from_close` 按 12/26/9 从收盘价现算，仅用于绘图）**；trend 策略再追加 ADX（plus_di/minus_di/adx_min 阈值线）子图。指标值经 `_line_to_numpy(line, n)` 从 backtrader line buffer 按 K 线根数对齐提取。入场=青色上三角、盈利出场=绿下三角、亏损出场=红下三角、期末未平仓=琥珀三角；每笔交易 entry→exit 虚线连接（win/loss 分色），hover 显示日期/价格/手数/盈亏/exit 类别；1M/3M/6M/1Y/All 区间按钮，周末 rangebreak，scrollZoom
@@ -478,9 +478,9 @@ strategy_instance = cerebro.run()[0]
 
 **HTML 报表产物**（main.py `run_backtest` 内）：
 
-- 每只标的生成 `output/plots/{code}_{strategy_id}_report.html`（自包含 Bokeh INLINE，可离线打开）
-- 同目录生成 `output/plots/{code}_{strategy_id}_interactive.html`（freqtrade 风格 Plotly 交互图：K 线 + 成交量 + ATR + MACD（全策略）+ ADX（trend）+ 进出场标记，报表通过相对链接跳转）
-- 报表内容（freqtrade 对齐）：头部（标的/策略/区间/初始资金/最终净值/总收益）、8 张 KPI 卡片（年化/最大回撤/Sharpe/Sortino/Calmar/胜率/盈亏比/交易数）、Strategy Summary 表（胜负平、期望值、最佳/最差交易、持仓时长、连胜连亏、日度统计、B&H 与 alpha）、净值-回撤联动图（Bokeh，hover tooltip）、Exit Reason Stats 表（按平仓类别聚合）、Monthly Returns 月度收益热力表（年×12 月，正负绿红）、平仓交易 DataTable、action_log 信号表（含未平仓 BUY）、Analyzer 字段表（递归 flatten 5 个 analyzer）、K 线图链接；控制台同步打印 freqtrade 风格多行摘要
+- 每只标的生成 `output/plots/{code}_{strategy_id}_report.html`（Plotly plotly.js 内联，自包含可离线打开；Bokeh 已移除）
+- 同目录生成 `output/plots/{code}_{strategy_id}_interactive.html`（freqtrade 风格 Plotly 交互图：K 线 + 成交量 + ATR + MACD（全策略）+ ADX（trend）+ 板块指数副轴叠加 + 进出场标记，报表通过相对链接跳转）
+- 报表内容（freqtrade 对齐）：头部（标题格式 `名称 (代码) — Strategy: 策略`，不含板块；区间/初始资金/最终净值/总收益）、**板块指数区块（置于 KPI 卡片之上：最新点位/窗口涨跌/近20日/相对强弱）**、8 张 KPI 卡片（年化/最大回撤/Sharpe/Sortino/Calmar/胜率/盈亏比/交易数）、**Equity Curve & Drawdown（Plotly 暗色双子图，初始资金水平虚线，净值 y 轴紧贴数据，位于 Summary 之上）**、Strategy Summary 表（Market Regime + 期望值、最佳/最差交易、持仓时长、连胜连亏、日度统计、B&H 与 alpha——KPI 卡片已列项不重复）、Exit Reason Stats 表（按平仓类别聚合）、Monthly Returns 月度收益热力表（年×12 月，正负绿红）、Signals & Fills 信号-成交统一表（含未平仓 BUY）、Analyzer 字段表（递归 flatten 5 个 analyzer）、K 线图链接；控制台同步打印 freqtrade 风格多行摘要
 
 ### run_all.py
 
