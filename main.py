@@ -126,7 +126,7 @@ def run_backtest(data_provider, comminfo, cfg, param_pool, code, strategy_id, fo
     # Render freqtrade-style Plotly K-line chart (best-effort; optional dependency)
     interactive_html = None
     try:
-        interactive_html = render_interactive_chart(strategy_instance, PLOT_DIR, code, strategy_id, df_data, trades_df, stock_name=stock_name, index_df=index_df, index_label=index_label)
+        interactive_html = render_interactive_chart(strategy_instance, PLOT_DIR, code, strategy_id, df_data, trades_df, stock_name=stock_name, index_df=index_df, index_label=index_label, action_df=action_df)
         logger.info(f"Interactive chart saved to {interactive_html}")
     except Exception as e:
         logger.warning(f"Interactive chart unavailable for {code}: {e}")

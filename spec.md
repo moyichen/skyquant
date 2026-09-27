@@ -290,15 +290,19 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
    - Strategy Summary 表：Market Regime 行 + 仅列 KPI 卡片未展示的指标（胜负平笔数、期望值、最佳/最差交易、持仓时长、连胜连亏、日度统计、B&H 与 alpha；年化/回撤/Sharpe/Sortino/Calmar/胜率/盈亏比/总交易数不在此重复）
    - Exit Reason Stats 表：四类平仓原因的笔数/胜率/均持时/盈亏聚合
    - Monthly Returns 月度收益热力表（年×12 月，正绿负红）
-   - Signals &amp; Fills 统一表（HTML table）：每个信号一行，同时列触发侧（信号日/触发收盘价/拟下单手数/reason）与成交侧（状态/成交日/成交价/成交量/持仓均价/净盈亏），BUY 绿 SELL 红，含未平仓 BUY
+   - Signals &amp; Fills 统一表（HTML table，**按信号日倒序，最新在最上**）：每个信号一行，同时列触发侧（信号日/触发收盘价/拟下单手数/reason）与成交侧（状态/成交日/成交价/成交量/持仓均价/净盈亏），BUY 绿 SELL 红，含未平仓 BUY
    - Analyzer 字段表（递归压平 5 个 analyzer 的 namedtuple/dict/list）
    - Plotly K 线交互图相对链接
 
 2. `{code}_{strategy_id}_interactive.html` — freqtrade 风格 Plotly 交互图（plotly.js 内联，可离线打开）：
-   - K 线主图：红涨绿跌实心蜡烛；策略指标覆盖层（trend: EMA20/60；range: BB upper/mid/lower；breakout: Donchian upper/lower）；板块指数收盘线以副轴（secondary_y）叠加于主图（灰色细线，按股票交易日 reindex+ffill 对齐，指数数据缺失时不叠加）
-   - 成交标记：青色上三角=入场，绿/红下三角=盈利/亏损出场（hover 显示价格、净盈亏、exit 类别），琥珀三角=期末未平仓；entry→exit 虚线连接每笔交易
+   - K 线主图：红涨绿跌实心蜡烛；策略指标覆盖层（trend: EMA20/60；range: BB upper/mid/lower；breakout: Donchian upper/lower，legendgroup=`indicators`）；板块指数收盘线以副轴（secondary_y）叠加于主图（灰色细线，按股票交易日 reindex+ffill 对齐，指数数据缺失时不叠加）
+   - **实际成交标记（legendgroup=`fills`，大实心三角+白色描边，最显著）**：亮蓝上三角=FILLED entry 成交买入，深绿/红下三角=FILLED exit 成交卖出（盈/亏，hover 显示成交价、净盈亏、exit 类别），琥珀三角=FILLED open position 持仓中；entry→exit 虚线连接每笔已平仓交易
+   - **触发信号标记（legendgroup=`signals`，小空心三角、半透明，来自 action_log 全部信号含 EXPIRED 未成交）**：BUY 信号在 K 线低点下方（filled 蓝/expired 灰/pending 紫），SELL 信号在高点上方（filled 橙/expired 灰/pending 紫）；hover 显示信号日、触发收盘价、拟下单手数、成交回填信息、reason。每个 side×status 组合是独立 trace，图例点击可单独开关，便于分析信号组合与成交漏单
+   - **技术交叉信号（legendgroup=`tech`，纯展示不回灌策略）**：EMA 金叉（菱形绿点，K 线低点下方，→ 多头排列）/ EMA 死叉（菱形橙点，高点上方，→ 空头排列）；MACD 金叉（绿圆点）/ 死叉（橙叉）画在 MACD 子图 DIF 线上。trend 策略用自身 ema_fast/ema_slow 周期；range/breakout 从收盘价现算 EMA20/60 并以虚线参考线叠加（`EMA20 (ref)`/`EMA60 (ref)`，可开关）
    - 子图：成交量（红涨绿跌柱）、ATR14、**MACD（所有策略；trend 用指标线 macd/macdsignal/macdhist，range/breakout 从收盘价按 12/26/9 现算，仅绘图）**；trend 再追加 ADX（plus_di/minus_di/adx_min 阈值）
-   - 1M/3M/6M/1Y/All 区间按钮、周末跳过、scrollZoom、暗色主题
+   - 图例分四组（**指标**=EMA/BB/Donchian/板块指数/EMA ref，全为线；**成交**=连线·盈亏线 + 买卖三角/持仓中点；**触发信号**=side×status 空心三角点；**技术交叉**=EMA/MACD 金死叉点），水平排列于**图表上方 margin 区**（`yref=container`，不遮挡 K 线）。**图例排列原则：线状 trace 全部集中在前、点状 trace 集中在后，功能组内也是线先点后**——通过控制 add_trace 顺序实现（Plotly 图例按 trace 添加顺序渲染）；短中文名 + legendgrouptitle 组标题，单击开关、双击隔离；1M/3M/6M/1Y/All 按钮在其下方
+   - **freqtrade 风格十字线**（x/y axis `showspikes + spikemode=across + spikesnap=cursor`）：鼠标移动时全高点线贯穿各子图定位，unified hover tooltip 用半透明深色背景 + 小字号（10px）减轻遮挡
+   - 周末跳过、scrollZoom、暗色主题
 
 > 旧版 PNG 产物（`_equity_dd.png` / `_win_pie.png`）与 `plot_all` / `plot_equity_drawdown` / `plot_win_pie` / `_setup_chinese_font` 已全部移除。
 

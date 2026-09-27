@@ -479,8 +479,8 @@ strategy_instance = cerebro.run()[0]
 **HTML 报表产物**（main.py `run_backtest` 内）：
 
 - 每只标的生成 `output/plots/{code}_{strategy_id}_report.html`（Plotly plotly.js 内联，自包含可离线打开；Bokeh 已移除）
-- 同目录生成 `output/plots/{code}_{strategy_id}_interactive.html`（freqtrade 风格 Plotly 交互图：K 线 + 成交量 + ATR + MACD（全策略）+ ADX（trend）+ 板块指数副轴叠加 + 进出场标记，报表通过相对链接跳转）
-- 报表内容（freqtrade 对齐）：头部（标题格式 `名称 (代码) — Strategy: 策略`，不含板块；区间/初始资金/最终净值/总收益）、**板块指数区块（置于 KPI 卡片之上：最新点位/窗口涨跌/近20日/相对强弱）**、8 张 KPI 卡片（年化/最大回撤/Sharpe/Sortino/Calmar/胜率/盈亏比/交易数）、**Equity Curve & Drawdown（Plotly 暗色双子图，初始资金水平虚线，净值 y 轴紧贴数据，位于 Summary 之上）**、Strategy Summary 表（Market Regime + 期望值、最佳/最差交易、持仓时长、连胜连亏、日度统计、B&H 与 alpha——KPI 卡片已列项不重复）、Exit Reason Stats 表（按平仓类别聚合）、Monthly Returns 月度收益热力表（年×12 月，正负绿红）、Signals & Fills 信号-成交统一表（含未平仓 BUY）、Analyzer 字段表（递归 flatten 5 个 analyzer）、K 线图链接；控制台同步打印 freqtrade 风格多行摘要
+- 同目录生成 `output/plots/{code}_{strategy_id}_interactive.html`（freqtrade 风格 Plotly 交互图：K 线 + 成交量 + ATR + MACD（全策略）+ ADX（trend）+ 板块指数副轴叠加 + **双层标记**——大实心三角=实际成交 fills（entry/exit 盈亏/持仓中），小空心三角=触发信号 signals（含 EXPIRED 未成交，按 side×status 分 trace），图例三组均可点击开关，报表通过相对链接跳转）
+- 报表内容（freqtrade 对齐）：头部（标题格式 `名称 (代码) — Strategy: 策略`，不含板块；区间/初始资金/最终净值/总收益）、**板块指数区块（置于 KPI 卡片之上：最新点位/窗口涨跌/近20日/相对强弱）**、8 张 KPI 卡片（年化/最大回撤/Sharpe/Sortino/Calmar/胜率/盈亏比/交易数）、**Equity Curve & Drawdown（Plotly 暗色双子图，初始资金水平虚线，净值 y 轴紧贴数据，位于 Summary 之上）**、Strategy Summary 表（Market Regime + 期望值、最佳/最差交易、持仓时长、连胜连亏、日度统计、B&H 与 alpha——KPI 卡片已列项不重复）、Exit Reason Stats 表（按平仓类别聚合）、Monthly Returns 月度收益热力表（年×12 月，正负绿红）、Signals & Fills 信号-成交统一表（按信号日倒序，最新在最上；含未平仓 BUY）、Analyzer 字段表（递归 flatten 5 个 analyzer）、K 线图链接；控制台同步打印 freqtrade 风格多行摘要
 
 ### run_all.py
 
