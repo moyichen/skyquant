@@ -493,7 +493,7 @@ def _build_exit_reason_table_html(exit_reason_df: pd.DataFrame) -> str:
     )
 
 
-def _build_strategy_summary_html(metrics: dict) -> str:
+def _build_strategy_summary_html(metrics: dict, regime: Optional[str] = None, sector_info: Optional[dict] = None) -> str:
     """freqtrade SUMMARY METRICS as a two-column key/value table."""
     def signed_pct(value, digits=2):
         if value is None or pd.isna(value):
@@ -507,7 +507,15 @@ def _build_strategy_summary_html(metrics: dict) -> str:
         css = "positive" if value >= 0 else "negative"
         return f"<span class='{css}'>{_fmt_money(value, digits)}</span>"
 
-    rows = [
+    rows = []
+    if regime:
+        rows.append(("Market Regime (前置筛选)", f"{regime} &rarr; 路由策略"))
+    if sector_info and sector_info.get("sector"):
+        idx_part = ""
+        if sector_info.get("sector_index"):
+            idx_part = f" &middot; {sector_info.get('sector_index_name') or ''} ({sector_info['sector_index']})"
+        rows.append(("Sector (所属板块)", f"{sector_info['sector']}{idx_part}"))
+    rows += [
         ("Total / Win / Draw / Loss", f"{metrics['total_trades']} / {metrics['n_wins']} / {metrics['n_draws']} / {metrics['n_losses']}"),
         ("Win Rate", _fmt_pct(metrics["win_rate"])),
         ("Profit Factor", _fmt_num(metrics["profit_factor"])),
@@ -525,6 +533,76 @@ def _build_strategy_summary_html(metrics: dict) -> str:
     ]
     body = "".join(f"<tr><th>{label}</th><td>{value}</td></tr>" for label, value in rows)
     return "<table class='data-table summary-table'><tbody>" + body + "</tbody></table>"
+
+
+def _build_sector_index_html(sector_info: Optional[dict], index_df: Optional[pd.DataFrame], price_df: Optional[pd.DataFrame]) -> str:
+    """板块指数情况 section: latest quote + window/20d return + stock-vs-sector relative strength.
+
+    Returns "" when the stock has no sector_index configured (section skipped).
+    """
+    if not sector_info or not sector_info.get("sector_index"):
+        return ""
+
+    index_code = sector_info["sector_index"]
+    index_name = sector_info.get("sector_index_name") or index_code
+    sector = sector_info.get("sector") or "未配置"
+
+    if index_df is None or len(index_df) == 0:
+        return (
+            "<div class='section'><div class='section-title'>板块指数 (Sector Index)</div>"
+            f"<p class='empty'>板块 {sector} 的指数 {index_name} ({index_code}) 数据不可用："
+            "请检查 Tushare 接口权限或 config.yaml 中 sector_index 配置。</p></div>"
+        )
+
+    df = index_df.copy()
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df = df.sort_values("datetime").reset_index(drop=True)
+
+    # Clip to the backtest price window when price_df is available
+    if price_df is not None and len(price_df):
+        w_start, w_end = pd.to_datetime(price_df["datetime"].min()), pd.to_datetime(price_df["datetime"].max())
+        df_window = df[(df["datetime"] >= w_start) & (df["datetime"] <= w_end)]
+    else:
+        df_window = df
+    if df_window.empty:
+        df_window = df
+
+    latest = df.iloc[-1]
+    latest_date = latest["datetime"].strftime("%Y-%m-%d")
+    latest_close = float(latest["close"])
+    latest_pct = float(latest["pct_chg"]) / 100.0 if "pct_chg" in df.columns and pd.notna(latest.get("pct_chg")) else None
+
+    window_return = float(df_window["close"].iloc[-1] / df_window["close"].iloc[0] - 1.0) if len(df_window) >= 2 else None
+    recent = df.tail(21)
+    recent20_return = float(recent["close"].iloc[-1] / recent["close"].iloc[0] - 1.0) if len(recent) >= 2 else None
+
+    stock_window_return = None
+    relative = None
+    if price_df is not None and len(price_df) >= 2:
+        p = price_df.sort_values("datetime") if "datetime" in price_df.columns else price_df
+        stock_window_return = float(p["close"].iloc[-1] / p["close"].iloc[0] - 1.0)
+        if window_return is not None:
+            relative = stock_window_return - window_return
+
+    def pct_cell(value):
+        if value is None:
+            return "<td>N/A</td>"
+        color = "#57CC99" if value >= 0 else "#F38181"
+        return f"<td style='color:{color}'>{value:+.2%}</td>"
+
+    latest_pct_td = pct_cell(latest_pct)
+    html = f"""
+  <div class="section">
+    <div class="section-title">板块指数 (Sector Index)</div>
+    <table class="data-table">
+      <thead><tr><th>板块</th><th>指数</th><th>代码</th><th>最新日期</th><th>最新点位</th><th>当日涨跌</th><th>回测窗口涨跌</th><th>近20交易日</th><th>标的窗口涨跌</th><th>相对强弱</th></tr></thead>
+      <tbody><tr>
+        <td>{sector}</td><td>{index_name}</td><td>{index_code}</td><td>{latest_date}</td><td>{latest_close:,.2f}</td>
+        {latest_pct_td}{pct_cell(window_return)}{pct_cell(recent20_return)}{pct_cell(stock_window_return)}{pct_cell(relative)}
+      </tr></tbody>
+    </table>
+  </div>"""
+    return html
 
 
 def _build_monthly_returns_html(equity_df: pd.DataFrame) -> str:
@@ -605,6 +683,10 @@ def render_report(
     end_date: str,
     initial_capital: float,
     final_value: float,
+    regime: Optional[str] = None,
+    sector_info: Optional[dict] = None,
+    index_df: Optional[pd.DataFrame] = None,
+    price_df: Optional[pd.DataFrame] = None,
     interactive_html: Optional[str] = None,
     stock_name: Optional[str] = None,
 ) -> str:
@@ -623,8 +705,9 @@ def render_report(
     # ---- freqtrade-aligned tables ----
     exit_reason_df = summarize_exit_reasons(trades_df)
     exit_reason_html = _build_exit_reason_table_html(exit_reason_df)
-    strategy_summary_html = _build_strategy_summary_html(metrics)
+    strategy_summary_html = _build_strategy_summary_html(metrics, regime=regime, sector_info=sector_info)
     monthly_html = _build_monthly_returns_html(equity_df)
+    sector_index_html = _build_sector_index_html(sector_info, index_df, price_df)
 
     # ---- Build HTML content sections ----
     name_display = f"{stock_name} " if stock_name else ""
@@ -749,6 +832,8 @@ footer {{ margin-top: 40px; padding-top: 20px; border-top: 1px solid #2a3548; fo
     {strategy_summary_html}
   </div>
 
+  {sector_index_html}
+
   <div class="section">
     <div class="section-title">Equity Curve &amp; Drawdown</div>
     {equity_div}
@@ -818,13 +903,14 @@ def _compute_macd_from_close(close: pd.Series, fast: int = 12, slow: int = 26, s
     return macd.to_numpy(), macdsignal.to_numpy(), macdhist.to_numpy()
 
 
-def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, trades_df, stock_name=None):
+def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, trades_df, stock_name=None, index_df=None, index_label=None):
     """Render a freqtrade-style interactive Plotly chart (after cerebro.run).
 
     Rows: candlesticks + strategy overlay indicators + entry/exit markers and
     trade connectors; volume; ATR; MACD (all strategies, indicator lines when the
     strategy owns them else computed from close) and ADX row for the trend strategy.
-    Self-contained HTML (plotly.js inlined, openable offline).
+    When index_df is provided, the sector index close overlays the price row on a
+    secondary y-axis. Self-contained HTML (plotly.js inlined, openable offline).
     Returns the output path.
     """
     import plotly.graph_objects as go
@@ -864,6 +950,8 @@ def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, t
         shared_xaxes=True,
         vertical_spacing=0.03,
         row_heights=row_heights,
+        # Price row carries a secondary y-axis for the sector index overlay
+        specs=[[{"secondary_y": True}]] + [[{"secondary_y": False}]] * (len(row_of) - 1),
     )
 
     # ---- Candlesticks: A-share convention red up / green down ----
@@ -905,6 +993,21 @@ def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, t
     if hasattr(strategy, "donchian_upper"):
         add_overlay(strategy.donchian_upper, f"Donchian upper {strategy.p.breakout_period}", "#4FC3F7", width=1.1)
         add_overlay(strategy.donchian_lower, f"Donchian lower {strategy.p.breakout_period}", "#F5B041", width=1.1)
+
+    # ---- Sector index overlay: close curve on the price row's secondary y-axis ----
+    if index_df is not None and len(index_df):
+        idx = index_df.copy()
+        idx["datetime"] = pd.to_datetime(idx["datetime"])
+        idx_close = idx.set_index("datetime")["close"].reindex(pd.DatetimeIndex(x)).ffill()
+        fig.add_trace(
+            go.Scatter(x=x, y=idx_close.values, mode="lines", name=index_label or "sector index",
+                       line=dict(color="#9AA7B8", width=1.4), opacity=0.85, hovertemplate="%{y:.2f}"),
+            row=1, col=1, secondary_y=True,
+        )
+        fig.update_yaxes(
+            title_text=index_label or "sector index", secondary_y=True, row=1, col=1,
+            showgrid=False, title_font=dict(size=11, color="#9AA7B8"), tickfont=dict(color="#9AA7B8"),
+        )
 
     # ---- Trade entry/exit markers (freqtrade plot-trades style) ----
     row_by_date = {d: i for i, d in enumerate(x.dt.date)}

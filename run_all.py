@@ -4,7 +4,7 @@ Layered flow:
   config -> data fetch/cache -> stock pool pre-filter (basic always; trend with
   --screen; regime labels drive strategy routing) -> per-symbol optimization
   chain (grid -> out-of-sample -> rolling -> aggregate -> write config) ->
-  final batched backtest + manual trade review.
+  final batched backtest + live trade review/signals.
 """
 
 import argparse
@@ -20,7 +20,7 @@ OPT_DIR = PROJECT_ROOT / "opt_pipeline"
 sys.path.insert(0, str(OPT_DIR))
 from common import resolve_target_codes  # noqa: E402
 from dataprovider import DataProvider  # noqa: E402
-from stock_filter import FILTER_CSV, filter_stock_pool  # noqa: E402
+from stock_filter import FILTER_CSV, filter_stock_pool, write_regime_to_config  # noqa: E402
 
 setup_logging(LOG_FILE)
 logger = logging.getLogger(__name__)
@@ -101,6 +101,8 @@ def main():
     # main.py. --screen additionally enforces trendability.
     filter_df = filter_stock_pool(DataProvider(), target_codes, cfg.get("stock_filter", {}))
     filter_df.to_csv(FILTER_CSV, index=False)
+    # Mark regime labels into config.yaml stock_list (reports display them)
+    write_regime_to_config(filter_df)
 
     pairlist_failed = filter_df[~filter_df["pairlist_passed"]]
     if len(pairlist_failed) > 0:
@@ -151,7 +153,7 @@ def main():
                 [sys.executable, script, "--stock-list", code],
             )
 
-    # ---- Steps 8-9: final batched backtest & manual trade review ----
+    # ---- Steps 8-9: final batched backtest & live trade review ----
     # No --strategy: main.py auto-routes each symbol via the filter report.
     run_step(
         "[Final] Batch backtest with regime routing and updated parameters",
@@ -159,9 +161,9 @@ def main():
         [sys.executable, "main.py", "--stock-list", codes_csv],
     )
     run_step(
-        "[Final] Manual trade review",
+        "[Final] Live trade review and next-day signals",
         PROJECT_ROOT,
-        [sys.executable, "manual_trade_review.py", "--stock-list", codes_csv],
+        [sys.executable, "live_trading.py", "--stock-list", codes_csv],
     )
 
     logger.info("\nAll pipeline tasks completed!")
@@ -174,7 +176,8 @@ def main():
     logger.info("  - Equity curves: output/equity_curve/")
     logger.info("  - Plots: output/plots/")
     logger.info("  - Backtest metrics summary: output/metrics_summary.csv")
-    logger.info("  - Manual trade review report: output/manual_review_result.csv")
+    logger.info("  - Live trade review report: output/live_trade_review.csv")
+    logger.info("  - Live portfolio HTML report: output/plots/live_portfolio_report.html")
     logger.info(f"  - Run log: {LOG_FILE}")
 
 

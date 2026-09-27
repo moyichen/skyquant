@@ -25,7 +25,7 @@ from strategy import STRATEGY_DESCRIPTIONS, STRATEGY_MAPPING
 
 # ========== Paths (anchored to project root, independent of CWD) ==========
 METRICS_SUMMARY = OUTPUT_DIR / "metrics_summary.csv"
-TRADE_CSV = PROJECT_ROOT / "manual_trades.csv"
+TRADE_CSV = PROJECT_ROOT / "live_trades.csv"
 
 DEFAULT_STRATEGY = "trend"
 
@@ -41,12 +41,12 @@ def prepare_output_dirs():
         d.mkdir(parents=True, exist_ok=True)
 
 
-def validate_manual_trades(valid_codes):
-    """Check stock codes in manual_trades.csv against the configured stock pool."""
+def validate_live_trades(valid_codes):
+    """Check stock codes in live_trades.csv against the configured stock pool."""
     df_trades = pd.read_csv(TRADE_CSV, dtype={"stock_code": str}, parse_dates=["trade_date"])
     invalid = [c for c in df_trades["stock_code"].unique() if c not in valid_codes]
     if invalid:
-        raise ValueError(f"manual_trades.csv contains codes missing from stock pool: {invalid}")
+        raise ValueError(f"live_trades.csv contains codes missing from stock pool: {invalid}")
 
 
 def get_strategy_param(param_pool, code, strategy_id):
@@ -55,13 +55,22 @@ def get_strategy_param(param_pool, code, strategy_id):
     return strategy_cls, params
 
 
-def run_backtest(data_provider, comminfo, cfg, param_pool, code, strategy_id, force_refresh, stock_name=None):
+def run_backtest(data_provider, comminfo, cfg, param_pool, code, strategy_id, force_refresh, stock_name=None, regime=None, sector_info=None):
     """Run one backtest for a single stock/strategy; return metrics dict or None."""
     global_setting = cfg["global_setting"]
     df_data = data_provider.fetch_stock(code, force_refresh)
     if df_data is None:
         logger.warning(f"Failed to fetch market data for {code}, skipping")
         return None
+
+    # Sector index (best-effort): report stats + interactive chart overlay
+    index_df, index_label = None, None
+    if sector_info and sector_info.get("sector_index"):
+        index_label = f"{sector_info.get('sector_index_name') or ''} ({sector_info['sector_index']})".strip()
+        try:
+            index_df = data_provider.fetch_index(sector_info["sector_index"], force_refresh=force_refresh)
+        except Exception as e:
+            logger.warning(f"Sector index {sector_info['sector_index']} fetch failed for {code}: {e}")
 
     cerebro = bt.Cerebro()
     strategy_cls, param_dict = get_strategy_param(param_pool, code, strategy_id)
@@ -117,7 +126,7 @@ def run_backtest(data_provider, comminfo, cfg, param_pool, code, strategy_id, fo
     # Render freqtrade-style Plotly K-line chart (best-effort; optional dependency)
     interactive_html = None
     try:
-        interactive_html = render_interactive_chart(strategy_instance, PLOT_DIR, code, strategy_id, df_data, trades_df, stock_name=stock_name)
+        interactive_html = render_interactive_chart(strategy_instance, PLOT_DIR, code, strategy_id, df_data, trades_df, stock_name=stock_name, index_df=index_df, index_label=index_label)
         logger.info(f"Interactive chart saved to {interactive_html}")
     except Exception as e:
         logger.warning(f"Interactive chart unavailable for {code}: {e}")
@@ -139,6 +148,10 @@ def run_backtest(data_provider, comminfo, cfg, param_pool, code, strategy_id, fo
         final_value=float(final_value),
         interactive_html=interactive_html,
         stock_name=stock_name,
+        regime=regime,
+        sector_info=sector_info,
+        index_df=index_df,
+        price_df=df_data,
     )
     logger.info(f"HTML report saved to {report_path}")
 
@@ -199,13 +212,13 @@ def main():
 
     regime_map = load_regime_map()
 
-    # Sanity-check manual trade records against the full configured pool rather
+    # Sanity-check live trade records against the full configured pool rather
     # than the --stock-list filtered runtime set (non-fatal warning only)
     pool_codes = [item["code"] for item in cfg["stock_list"]]
     try:
-        validate_manual_trades(pool_codes)
+        validate_live_trades(pool_codes)
     except Exception as e:
-        logger.warning(f"Manual trade validation warning: {e}")
+        logger.warning(f"Live trade validation warning: {e}")
 
     metric_rows = []
     for stock_info in stock_list:
@@ -221,6 +234,8 @@ def main():
             strategy_id,
             args.force_refresh,
             stock_name=name,
+            regime=regime_map.get(code),
+            sector_info=stock_info,
         )
         if metrics is not None:
             metric_rows.append(metrics)

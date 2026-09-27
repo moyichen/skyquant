@@ -405,6 +405,43 @@ def strategy_for_code(code: str, regime_map: dict, param_pool: dict = None, defa
     return default
 
 
+def write_regime_to_config(result_df: pd.DataFrame, config_path: str = None) -> list:
+    """Write each symbol's regime label back into config.yaml stock_list entries.
+
+    Text-level edit (regex) instead of yaml.dump so existing comments/quoting in
+    config.yaml are preserved. Only codes already present in stock_list are updated;
+    the `regime:` line is appended after the entry's other fields or updated in
+    place on re-runs. Returns the list of written (code, regime) pairs.
+    """
+    import re
+
+    from comm import CONFIG_PATH
+
+    path = Path(config_path or CONFIG_PATH)
+    text = path.read_text(encoding="utf-8")
+    written = []
+    for _, row in result_df.iterrows():
+        code = str(row["stock_code"])
+        regime = row.get("regime")
+        if not regime or pd.isna(regime):
+            continue
+        block_pat = re.compile(r"(- code: '%s'\n(?:  .*\n)*?)(?=- code:|strategy_params:|\Z)" % re.escape(code))
+        m = block_pat.search(text)
+        if not m:
+            continue  # code not in config stock_list: skip silently
+        block = m.group(1)
+        if re.search(r"^  regime: .+$", block, flags=re.M):
+            new_block = re.sub(r"^  regime: .+$", f"  regime: {regime}", block, flags=re.M)
+        else:
+            new_block = block + f"  regime: {regime}\n"
+        if new_block != block:
+            text = text[: m.start(1)] + new_block + text[m.end(1):]
+            written.append((code, regime))
+    if written:
+        path.write_text(text, encoding="utf-8")
+    return written
+
+
 # ===================== CLI =====================
 def main():
     parser = argparse.ArgumentParser(description="Stock pool pre-filter: Pairlist Filters + trendability + regime routing")
@@ -431,6 +468,11 @@ def main():
     result = filter_stock_pool(data_provider, codes, data_provider.cfg.get("stock_filter", {}))
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     result.to_csv(args.output, index=False)
+
+    # Mark each symbol's regime label into config.yaml stock_list (reports display it)
+    written = write_regime_to_config(result)
+    if written:
+        print(f"Regime written to config.yaml stock_list ({len(written)} symbols)")
 
     pairlist_failed = result[~result["pairlist_passed"]]
     trend_failed = result[result["pairlist_passed"] & ~result["passed"]]

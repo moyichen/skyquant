@@ -2,7 +2,7 @@
   "cases": {
     "000725|breakout": {
       "bars": 660,
-      "final_value": 104731.1098,
+      "final_value": 115203.0074,
       "n_buys": 15,
       "n_sells": 11,
       "n_trades": 11,
@@ -12,11 +12,11 @@
         "max_risk_ratio": 0.02,
         "trail_atr_multiple": 2.0
       },
-      "total_return": 0.047311
+      "total_return": 0.0473
     },
     "000725|range": {
       "bars": 660,
-      "final_value": 111932.753,
+      "final_value": 123127.0875,
       "n_buys": 13,
       "n_sells": 11,
       "n_trades": 11,
@@ -27,11 +27,11 @@
         "max_risk_ratio": 0.02,
         "trail_atr_multiple": 2.0
       },
-      "total_return": 0.119328
+      "total_return": 0.119337
     },
     "000725|trend": {
       "bars": 660,
-      "final_value": 104414.6171,
+      "final_value": 114855.7727,
       "n_buys": 15,
       "n_sells": 13,
       "n_trades": 13,
@@ -41,16 +41,16 @@
         "momentum_period": 20,
         "trail_atr_multiple": 1.6
       },
-      "total_return": 0.044146
+      "total_return": 0.044143
     }
   },
   "meta": {
     "end_date": "20260921",
-    "initial_capital": 100000.0,
+    "initial_capital": 110000.0,
     "start_date": "20240101",
     "stocks": [
       "000725"
     ],
-    "updated_at": "2026-09-27 11:25:57"
+    "updated_at": "2026-09-27 15:39:57"
   }
 }

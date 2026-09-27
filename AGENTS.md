@@ -4,7 +4,7 @@
 
 ## 项目简介
 
-SkyQuant 是一套 A 股日线量化策略回测流水线，支持全自动参数寻优、过拟合校验、策略回测、指标计算、可视化绘图、手工交易复盘，以及每日收盘后信号生成。
+SkyQuant 是一套 A 股日线量化策略回测流水线，支持全自动参数寻优、过拟合校验、策略回测、指标计算、可视化绘图，以及每日收盘后的实盘成交复盘与次日信号生成（live_trading.py）。
 
 ## 系统分层架构
 
@@ -13,11 +13,11 @@ SkyQuant 是一套 A 股日线量化策略回测流水线，支持全自动参�
 | 层 | 文件 | 职责 |
 |----|------|------|
 | 1. 配置层 | config.yaml | 全部可配置项外置：资金/区间/滑点、黑白名单、费率、筛选阈值、策略参数、寻优目标（profit_rate/sharpe/calmar） |
-| 2. 数据层 | dataprovider.py | Tushare 拉取/增量更新/CSV 缓存/标准化 DataFrame；无任何交易逻辑（`DataProvider` 类） |
+| 2. 数据层 | dataprovider.py | Tushare 拉取/增量更新/CSV 缓存/标准化 DataFrame；板块指数行情 fetch_index（index_daily，缓存 cache/index_cache/）；无任何交易逻辑（`DataProvider` 类） |
 | 3. 股票池筛选层 | stock_filter.py | Pairlist Filters 质量门（age/price/volume/turnover/liquidity/name，常驻）+ trend 趋势门（--screen）+ regime 分类路由；策略外部选股 |
 | 4. 策略插件层 | strategy/*.py | 每个策略一个文件，继承统一 BaseStrategy，只做指标与买卖信号；注册到 STRATEGY_MAPPING 即插拔 |
 | 5. 回测引擎层 | main.py | 封装 Cerebro：数据/手续费/滑点/Analyzer，默认按 regime 自动路由策略，遍历标的收集结果 |
-| 6. 指标报表层 | report.py | calc_metrics 指标计算 + 自包含 HTML 报告 + Plotly freqtrade 风格 K 线交互图；统一输出标准 |
+| 6. 指标报表层 | report.py | calc_metrics 指标计算 + 自包含 HTML 报告（Strategy Summary 展示 regime/板块，「板块指数」区块：最新点位/窗口涨跌/近20日/相对强弱）+ Plotly freqtrade 风格 K 线交互图（板块指数收盘线副轴叠加）；统一输出标准 |
 | 7. 参数寻优层 | opt_pipeline/*.py | 网格→外样本→滚动→聚合→写配置；多指标 dict 贯穿 worker/CSV，回测与寻优复用同一套策略代码 |
 | 8. 一键入口 | run_all.py | 数据→筛选→按标的寻优闭环→批量回测→复盘；统一日志 output/run.log |
 | 9. 公共工具层 | comm.py | 手续费、路径常量单一来源、setup_logging、apply_blacklist、build_commission、apply_broker_settings |
@@ -62,9 +62,10 @@ python run_all.py --all-stocks --screen  # 全量标的池 + 趋势性前置过�
 python stock_filter.py
 python stock_filter.py --stock-list 000725,600519
 
-# 每日信号生成（收盘后运行，输出买卖信号与次日操作建议）
-python daily_signal.py
-python daily_signal.py --force_refresh  # 强制全量下载
+# 实盘复盘与次日信号（收盘后运行：真实成交匹配 + 持仓信号 + HTML 实盘持仓报告）
+python live_trading.py
+python live_trading.py --force-refresh  # 强制全量下载
+python live_trading.py --stock-list 000725,601633  # 仅复盘指定持仓
 
 # 单次回测（不传 --strategy 时按 stock_filter.csv 的 regime 自动路由）
 python main.py --strategy trend
@@ -73,19 +74,19 @@ python main.py --stock-list 000725 --strategy trend  # 仅回测指定股票
 
 ### 标的集合与 `--stock-list` 参数说明
 
-**默认标的集合**：`run_all.py` 与 `param_optimize.py` 默认只处理回归标的集 `REGRESSION_STOCKS`（当前仅 `["000725"]`，定义在 `opt_pipeline/common.py`，与 tests/regression 共用同一常量）——每次修改参数后的快速迭代门槛。全量标的池需显式 `--all-stocks` 手动触发。`main.py`、`daily_signal.py`、`manual_trade_review.py` 默认仍用 config.yaml 全部标的。
+**默认标的集合**：`run_all.py` 与 `param_optimize.py` 默认只处理回归标的集 `REGRESSION_STOCKS`（当前仅 `["000725"]`，定义在 `opt_pipeline/common.py`，与 tests/regression 共用同一常量）——每次修改参数后的快速迭代门槛。全量标的池需显式 `--all-stocks` 手动触发。`main.py` 默认用 config.yaml 全部标的；`live_trading.py` 默认取 live_trades.csv 中的全部真实成交/持仓。
 
 `--stock-list` 参数（逗号分隔的股票代码列表）：
 
 - `run_all.py`/`param_optimize.py`：`--stock-list` > `--all-stocks` > 回归标的集（默认），互相冲突或代码不在 config.yaml `stock_list` 中会直接报错（`common.resolve_target_codes` 统一解析）
-- `main.py`/`daily_signal.py`/`manual_trade_review.py`：不传时用 config.yaml 全部标的
+- `main.py`：不传时用 config.yaml 全部标的；`live_trading.py`：不传时取 live_trades.csv 全部成交
 - 五个寻优阶段脚本（param_optimize/out_sample/rolling/aggregate/write_config）均支持 `--stock-list`；阶段 CSV 经 `common.write_stage_csv` 按标的合并写——重跑某标的只替换该标的的行，其余标的行保留
-- `run_all.py` 结构：批量拉数据 → **股票池前置筛选（常驻，见 stock_filter.py）** → 按标的循环跑寻优链 5 阶段（单标的闭环后再下一个）→ 最后批量回测 + 手工复盘
+- `run_all.py` 结构：批量拉数据 → **股票池前置筛选（常驻，见 stock_filter.py）** → 按标的循环跑寻优链 5 阶段（单标的闭环后再下一个）→ 最后批量回测 + 实盘复盘/信号（live_trading）
 - `run_all.py --screen`：Pairlist Filters 质量门常驻；加 `--screen` 后在质量门通过者之上再做趋势性门控，只把 pairlist+trend 双通过的标的送入寻优；筛选报告写 `output/stock_filter.csv`（含 regime 标签，驱动策略路由）
 
 ### stock_filter.py — 股票池前置筛选层（数据层与策略层之间）
 
-**分层定位**：策略只负责信号，标的筛选在策略外部。该层读本地缓存行情（只读不调 API），产出 `output/stock_filter.csv`，main.py / param_optimize.py / daily_signal.py 通过 `load_regime_map` / `routed_strategies` / `strategy_for_code` 消费它；无报告时安全降级（不剔除、不路由，跑全部 active 策略）。
+**分层定位**：策略只负责信号，标的筛选在策略外部。该层读本地缓存行情（只读不调 API），产出 `output/stock_filter.csv`，main.py / param_optimize.py / live_trading.py 通过 `load_regime_map` / `routed_strategies` / `strategy_for_code` 消费它；无报告时安全降级（不剔除、不路由，跑全部 active 策略）。
 
 **两层门控 + 一个分类**（阈值全部在 config.yaml `stock_filter`）：
 
@@ -128,14 +129,13 @@ trend 指标（config `stock_filter.trend`）：
 
 | 文件 | 职责 |
 |------|------|
-| run_all.py | 全流水线调度入口，日志管理，异常终止（行情→常驻 Pairlist Filters 筛选→按标的寻优 5 阶段→批量回测/复盘；--screen 追加趋势门） |
+| run_all.py | 全流水线调度入口，日志管理，异常终止（行情→常驻 Pairlist Filters 筛选→按标的寻优 5 阶段→批量回测→实盘复盘/信号；--screen 追加趋势门） |
 | stock_filter.py | 股票池前置筛选层：Pairlist Filters 质量门（Age/Price/Volume + turnover/liquidity/name A 股扩展）+ trend 趋势门 + regime 分类（trend/range/breakout 路由），输出 output/stock_filter.csv |
 | main.py | 回测引擎层：加载配置、遍历标的（默认按 regime 自动路由策略）、执行回测、输出指标与图表；隔离 Cerebro 细节 |
-| daily_signal.py | 每日信号生成：运行策略、输出买卖/持有信号与操作建议（按 regime 收窄策略集、Pairlist 门剔除、黑名单过滤） |
+| live_trading.py | 实盘交易模块（`LiveTrading`）：live_trades.csv 真实成交解析持仓/成本/浮盈、成交-信号匹配复盘、现算策略共识与次日操作建议（按 regime 收窄、Pairlist 门、黑名单），输出 live_trade_review.csv + live_signal_*.csv + plots/live_portfolio_report.html |
 | dataprovider.py | 数据层（`DataProvider` 类）：Tushare 行情拉取、增量更新、本地缓存、AStockData feed（不含任何交易逻辑） |
 | comm.py | 公共工具层：A 股手续费模型、路径常量单一来源（PROJECT_ROOT/CACHE/OUTPUT/PLOT/LOG/CONFIG）、setup_logging、apply_blacklist、build_commission、apply_broker_settings（资金+佣金+可选滑点） |
-| report.py | 指标与报表层：calc_metrics/calc_equity_metrics（年化、回撤、夏普、Sortino、卡玛、胜率、盈亏比、期望值、B&H alpha）+ 自包含 HTML 回测报告 + Plotly freqtrade 风格 K 线交互图（合并原 metrics_utils.py + plot_utils.py，取代 btplotting） |
-| manual_trade_review.py | 手工交易复盘：策略信号匹配、对比统计（黑名单过滤、路径锚定、滑点一致） |
+| report.py | 指标与报表层：calc_metrics/calc_equity_metrics（年化、回撤、夏普、Sortino、卡玛、胜率、盈亏比、期望值、B&H alpha，含 Sharpe/Calmar 中文分级评价）+ 自包含 HTML 回测报告 + Plotly freqtrade 风格 K 线交互图（合并原 metrics_utils.py + plot_utils.py，取代 btplotting） |
 | strategy/base.py | 策略基类：ATR 仓位管理、追踪止损、动态止盈、全局风控保护（Cooldown/StoplossGuard/MaxDrawdown，对齐 freqtrade Protections）、action_log 信号日志、统一输出接口（不设方向性入场门控） |
 | strategy/__init__.py | STRATEGY_MAPPING 策略注册表、DEFAULT_STRATEGY_PARAMS 默认参数 |
 | strategy/trend.py | 趋势策略（合并 trend_follow+momentum）：趋势过滤（EMA/MACD/波动率/ADX）+ Momentum>0 开仓 |
@@ -167,7 +167,7 @@ trend 指标（config `stock_filter.trend`）：
 
 2. **多策略共识机制**：每日信号生成时，一只标的可能配置多个策略。共识优先级为 SELL > BUY > HOLD > WAIT（防御性，任一策略发出 SELL 即覆盖）。
 
-3. **end_date 覆盖**：config.yaml 的 global_setting.end_date 是固定值。daily_signal.py 运行时会覆盖 ds.end_date 为当天日期，确保增量拉取覆盖最新行情。
+3. **end_date 覆盖**：config.yaml 的 global_setting.end_date 是固定值。live_trading.py 运行时会覆盖 data_provider.end_date 为当天日期，确保增量拉取覆盖最新行情。
 
 4. **Tushare 凭据隔离**：token 不放在 config.yaml，独立存放于 ~/.skyquant/tushare.yaml，不随项目入库。
 
@@ -186,12 +186,12 @@ trend 指标（config `stock_filter.trend`）：
 
 9. **回测与寻优同一指标口径**：worker `_run_single_combo` 不再用 FinalValueAnalyzer 只取终值，而是跑完整策略后从 `get_equity_dataframe()` 经 report.calc_equity_metrics 算 {profit_rate, sharpe, calmar, drawdown}，与 main.py 回测报表同源；broker 装配（佣金+滑点）经 comm_config dict 传子进程，保证两种路径口径一致。config `opt_pipeline.optimize_metric` 决定网格/聚合排序列（profit_rate/sharpe/calmar）。
 
-10. **统一 broker 装配 + 黑白名单**：main/daily_signal/manual_review/worker 全部走 comm.build_commission + apply_broker_settings（资金+佣金+可选 slippage_perc），杜绝四处手写导致的口径漂移；标的集三道关：config `stock_list` 白名单 → `stock_blacklist` 黑名单覆盖 → stock_filter 质量/趋势门。
+10. **统一 broker 装配 + 黑白名单**：main/live_trading/worker 全部走 comm.build_commission + apply_broker_settings（资金+佣金+可选 slippage_perc），杜绝四处手写导致的口径漂移；标的集三道关：config `stock_list` 白名单 → `stock_blacklist` 黑名单覆盖 → stock_filter 质量/趋势门。
 
 ## 配置文件
 
-- config.yaml：全局配置，参数全部外置（分层：global_setting 资金/区间/`slippage_perc` 滑点、`stock_blacklist` 黑名单、commission_config 费率、stock_list 白名单、stock_filter 三层筛选阈值、strategy_params 各标的策略参数、opt_pipeline 校验参数与 `optimize_metric` 优化目标 profit_rate/sharpe/calmar）
-- manual_trades.csv：手工交易记录（trade_date, stock_code, side, price, size）
+- config.yaml：全局配置，参数全部外置（分层：global_setting 资金/区间/`slippage_perc` 滑点、`stock_blacklist` 黑名单、commission_config 费率、stock_list 白名单（每条含 code/name/sector/sector_index/sector_index_name，stock_filter 筛选后自动写回 regime 字段）、stock_filter 三层筛选阈值、strategy_params 各标的策略参数、opt_pipeline 校验参数与 `optimize_metric` 优化目标 profit_rate/sharpe/calmar）
+- live_trades.csv：实盘真实成交记录（trade_date, stock_code, side, price, size；仅 BUY/SELL 成交，不含 PNL 列）
 - ruff.toml：Ruff 格式化配置（target-version=py39, line-length=260）
 - ~/.skyquant/tushare.yaml：Tushare API token
 
@@ -284,7 +284,7 @@ def get_action_dataframe() -> pd.DataFrame        # 决策时信号日志（含�
 | `range` | ADX<22 或 效率比<0.035（震荡/低效率） | range |
 | `breakout` | 价格振幅≥0.8 且 ADX≥22（高波动大振幅） | breakout |
 
-**路由消费函数**（stock_filter.py）：`load_regime_map()` 读 CSV→{code: regime}（缺失返回 {}）；`routed_strategies(code, regime_map, active_ids)` 有 regime→[该策略]，无→active 全集（param_optimize / daily_signal 用）；`strategy_for_code(code, regime_map, param_pool, default)` 决定单策略（main.py 自动路由：regime→config 已配策略→default）。
+**路由消费函数**（stock_filter.py）：`load_regime_map()` 读 CSV→{code: regime}（缺失返回 {}）；`routed_strategies(code, regime_map, active_ids)` 有 regime→[该策略]，无→active 全集（param_optimize / live_trading 用）；`strategy_for_code(code, regime_map, param_pool, default)` 决定单策略（main.py 自动路由：regime→config 已配策略→default）。`write_regime_to_config(filter_df)` 在 stock_filter.py CLI 与 run_all.py 筛选步骤后把 regime 文本级写回 config.yaml `stock_list` 各条目（保留注释，不用 yaml.dump）。
 
 ### trend 策略详解（趋势跟随 + 动量确认）
 
@@ -329,7 +329,7 @@ DEFAULT_STRATEGY_PARAMS = {
 }
 ```
 
-`DEFAULT_STRATEGY_PARAMS` 为各策略的默认参数，当 config.yaml 的 `strategy_params` 中没有某只股票的优化参数时，`daily_signal.py` 和 `manual_trade_review.py` 会回退使用这些默认参数。
+`DEFAULT_STRATEGY_PARAMS` 为各策略的默认参数，当 config.yaml 的 `strategy_params` 中没有某只股票的优化参数时，`live_trading.py` 会回退使用这些默认参数。
 
 ### dataprovider.py
 
@@ -366,7 +366,7 @@ def apply_broker_settings(broker, cfg, initial_capital, comminfo)
     # setcash + addcommissioninfo；global_setting.slippage_perc > 0 时 set_slippage_perc
 ```
 
-main.py / daily_signal.py / manual_trade_review.py / opt worker 全部经 `build_commission` + `apply_broker_settings` 装配，保证费率与滑点口径一致。
+main.py / live_trading.py / opt worker 全部经 `build_commission` + `apply_broker_settings` 装配，保证费率与滑点口径一致。
 
 ### report.py — 指标与报表层（合并 metrics_utils.py + plot_utils.py）
 
@@ -381,9 +381,12 @@ def build_console_summary(metrics, trades_df) -> str    # freqtrade 风格多行
 def render_report(equity_df, trades_df, action_df, metrics, analyzer_results,
                   out_dir, code, strategy_name, start_date, end_date,
                   initial_capital, final_value,
+                  regime=None, sector_info=None, index_df=None, price_df=None,
                   interactive_html=None, stock_name=None) -> str  # 返回 HTML 路径
-def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, trades_df, stock_name=None) -> str
-    # freqtrade 风格 Plotly 交互图路径（K线/成交量/ATR/MACD 全策略/ADX trend + 进出场标记）
+def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, trades_df,
+                             stock_name=None, index_df=None, index_label=None) -> str
+    # freqtrade 风格 Plotly 交互图路径（K线/成交量/ATR/MACD 全策略/ADX trend + 进出场标记；
+    # index_df 存在时板块指数收盘线叠加到价格行副轴）
 ```
 
 **指标公式**：
@@ -411,37 +414,57 @@ def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, t
 - **交互图已从 btplotting 迁移到 Plotly（freqtrade 风格）**：`render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, trades_df, stock_name=None)`，自包含 HTML（plotly.js 内联）。行布局：K 线主图（红涨绿跌实心蜡烛 + 策略指标覆盖层 + 进出场标记）+ 成交量 + ATR + **MACD（所有策略；trend 用指标线 macd/macdsignal/macdhist，range/breakout 由 `_compute_macd_from_close` 按 12/26/9 从收盘价现算，仅用于绘图）**；trend 策略再追加 ADX（plus_di/minus_di/adx_min 阈值线）子图。指标值经 `_line_to_numpy(line, n)` 从 backtrader line buffer 按 K 线根数对齐提取。入场=青色上三角、盈利出场=绿下三角、亏损出场=红下三角、期末未平仓=琥珀三角；每笔交易 entry→exit 虚线连接（win/loss 分色），hover 显示日期/价格/手数/盈亏/exit 类别；1M/3M/6M/1Y/All 区间按钮，周末 rangebreak，scrollZoom
 - 已删除：btplotting 兼容层（Py314CompatibleBacktraderPlotting / `_replace_empty_sentinels`）、旧的 `plot_all` / `plot_equity_drawdown` / `plot_win_pie` / `_setup_chinese_font`（matplotlib PNG 路径全部移除）
 
-### daily_signal.py
+### live_trading.py（实盘交易：真实成交复盘 + 次日信号 + HTML 持仓报告）
+
+模块级函数（信号链）：
 
 ```python
-def compute_holdings(trade_csv: Path) -> Dict[str, dict]        # BUY累加SELL累减, 返回{code: {size, avg_cost}}
+def compute_holdings(trade_csv: Path) -> Dict[str, dict]        # BUY加权累加SELL扣减, 返回{code: {size, avg_cost}}
 def run_strategy_actions(data_provider, comminfo, cfg, code, strategy_id, param) -> Optional[pd.DataFrame]  # 返回action_log
 def classify_signal(action_df, last_bar_date) -> dict            # 最后action日期==last_bar_date->该action; 否则持仓->HOLD/空仓->WAIT
 def compute_consensus(actions: List[str]) -> str                # SELL > BUY > HOLD > WAIT
 def derive_suggested_action(consensus: str, currently_held: bool) -> str  # 持仓+SELL->卖出, 持仓+BUY->加仓, 未持仓+BUY->买入
-def build_report_rows(data_provider, comminfo, cfg, param_pool, stock_name_map, holdings, report_date, stock_list) -> List[dict]
+def build_report_rows(..., force_refresh=False) -> List[dict]   # 仅扫描 live_trades.csv 当前持仓标的
 def print_console_summary(df, holdings, report_date)            # 三段式: 持仓操作/关注列表/统计汇总
 ```
 
-**命令行参数**：`--force_refresh`（强制全量下载）、`--stock-list`（逗号分隔股票代码，过滤 stock_list）
+`LiveTrading` 类（实盘复盘 + 报告）：
 
-**默认参数回退**：当某只股票在 config.yaml 的 `strategy_params` 中没有优化后的参数时，使用 `strategy/__init__.py` 中的 `DEFAULT_STRATEGY_PARAMS` 作为回退，确保所有股票都能生成信号。
+```python
+class LiveTrading:
+    def __init__(self, config_path="config.yaml", trade_csv="live_trades.csv", stock_list=None)
+        # stock_list: 逗号分隔股票代码，过滤 live_trades.csv
+    def get_strategy_signal(self, code, strategy_id, param) -> Optional[pd.DataFrame]  # 从trade_log提取信号
+    def match_live_trade(self) -> pd.DataFrame         # 按交易日匹配策略信号
+    def summary_report(self, out_csv="output/live_trade_review.csv") -> pd.DataFrame  # 匹配率/胜率/盈亏
+    def collect_portfolio_data(self, force_refresh=False, review_df=None) -> Optional[dict]
+        # 持仓 + 现算信号 + 最新行情 + 匹配矩阵 + metrics_summary.csv 回测参考
+    def render_live_html(self, data, out_html="output/plots/live_portfolio_report.html") -> str
+        # 自包含 HTML：账户KPI/持仓总览/逐标的卡片（真实成交、最新信号、匹配率、回测参考、要点解释与下一步信号）
+```
+
+**命令行参数**：`--force-refresh`（强制全量下载）、`--stock-list`（逗号分隔股票代码，过滤 live_trades.csv 记录；默认全部真实成交）
+
+**输出**：`output/live_trade_review.csv`（成交-信号匹配矩阵）+ `output/live_signal_{YYYYMMDD}.csv`（持仓信号）+ `output/plots/live_portfolio_report.html`（实盘持仓报告）+ 控制台摘要。
+
+**默认参数回退**：当某只股票在 config.yaml 的 `strategy_params` 中没有优化后的参数时，使用 `strategy/__init__.py` 中的 `DEFAULT_STRATEGY_PARAMS` 作为回退。
 
 **筛选层联动**：读 `output/stock_filter.csv`——`pairlist_passed=False` 的标的直接跳过；按 regime 用 `routed_strategies` 收窄参与共识的策略集（000725 regime=breakout 时只跑 breakout，不再三策略共识）；报告不存在时安全降级为全部 active 策略。config `stock_blacklist` 同步过滤。
 
 ### main.py
 
 ```python
-def run_backtest(data_provider, comminfo, cfg, param_pool, code, strategy_id, force_refresh, stock_name=None) -> dict
+def run_backtest(data_provider, comminfo, cfg, param_pool, code, strategy_id, force_refresh,
+                 stock_name=None, regime=None, sector_info=None) -> dict
 def get_strategy_param(param_pool, code, strategy_id) -> (strategy_cls, params)
-def validate_manual_trades(valid_codes)
+def validate_live_trades(valid_codes)
 ```
 
 **命令行参数**：`--force_refresh`（强制全量下载）、`--strategy`（策略 id；**默认 None=按 regime 自动路由**：`strategy_for_code` 读 stock_filter.csv 的 regime 标签 → config 已配策略 → 默认 trend）、`--stock-list`（逗号分隔股票代码，过滤 stock_list）
 
 > `--interactive` 已移除。每次回测默认生成自包含 HTML 报表与 Plotly K 线交互图，无需额外开关。
 
-**Cerebro 配置模式**（main.py / daily_signal.py / manual_trade_review.py 共用）：
+**Cerebro 配置模式**（main.py / live_trading.py 共用）：
 
 ```python
 cerebro = bt.Cerebro()
@@ -476,7 +499,7 @@ def run_step(name, cwd, cmd)    # subprocess.Popen 执行, 非零退出码->sys.
 1. 行情拉取（批量，透传完整目标集；`--skip-data` 可跳过）
 2. **股票池前置筛选（常驻）**：`stock_filter.filter_stock_pool(DataProvider(), target_codes)` 写 output/stock_filter.csv；Pairlist Filters 未过者剔除并打印原因；`--screen` 时再用 trend `passed` 收窄；regime 标签供后续路由
 3. 逐标的循环：对每个 code 依次调用 5 个阶段脚本并透传 `--stock-list <code>`：param_optimize.py（内部按 regime 只跑路由策略）→ out_sample_verify.py → rolling_window_verify.py → aggregate_best_param.py → write_param_to_config.py；单标的 5 阶段闭环后再处理下一个标的
-4. 收尾批量执行 main.py（不带 --strategy，按 regime 自动路由）与 manual_trade_review.py（手工复盘），透传完整目标集——保证 metrics_summary / 复盘报告等汇总 CSV 不被单标的覆盖
+4. 收尾批量执行 main.py（不带 --strategy，按 regime 自动路由）与 live_trading.py（实盘成交复盘 + 次日信号 + HTML 报告），透传完整目标集——保证 metrics_summary / 复盘报告等汇总 CSV 不被单标的覆盖
 
 **标的集解析**：`common.resolve_target_codes(args, cfg)`，优先级 `--stock-list` > `--all-stocks` > `REGRESSION_STOCKS`；`--stock-list` 与 `--all-stocks` 互斥，未知代码报错；最后统一应用 config `stock_blacklist`。
 
@@ -646,19 +669,6 @@ def rolling_slice(df, start_year=2020, train_years=4, test_years=1,
 - 至少 1 个有效窗口（训练段 >200 根）：start_date ≤ 2024-03-04
 - 推荐（训练段 242 根 + 2 个有效窗口）：start_date = 2024-01-01
 
-### manual_trade_review.py
-
-```python
-class ManualTradeReview:
-    def __init__(self, config_path="config.yaml", trade_csv="manual_trades.csv", stock_list=None)
-        # stock_list: 逗号分隔股票代码，过滤 manual_trades.csv
-    def get_strategy_signal(self, code, strategy_id, param) -> Optional[pd.DataFrame]  # 从trade_log提取信号
-    def match_manual_trade(self) -> pd.DataFrame       # 按交易日匹配策略信号
-    def summary_report(self, out_csv="output/manual_review_result.csv") -> pd.DataFrame  # 匹配率/胜率/盈亏
-```
-
-**命令行参数**：`--stock-list`（逗号分隔股票代码，过滤 manual_trades.csv 中对应记录）
-
 ## 策略修改检查清单与回归基线
 
 每次修改 `strategy/`（含 BaseStrategy、任一子类、参数默认值、PARAM_GRID）后，**必须逐项过以下清单**。本清单沉淀自历史踩坑（迭代器 pickle、参数静默回退、盘中/收盘口径混用、固定止盈截断盈利等）。
@@ -684,9 +694,9 @@ class ManualTradeReview:
 ### C. 注册表与接口
 
 13. **注册表同步**：新增/改名策略更新 `STRATEGY_MAPPING`、`STRATEGY_DESCRIPTIONS`、`DEFAULT_STRATEGY_PARAMS` 及 `main.py` 的 `DEFAULT_STRATEGY`。
-14. **三钩子 + 日志接口**：子类实现 `populate_indicators/populate_entry_trend/populate_exit_trend`；`get_equity_dataframe/get_trade_dataframe/get_action_dataframe` 必须可用（main/daily_signal/manual_review 均依赖）。
+14. **三钩子 + 日志接口**：子类实现 `populate_indicators/populate_entry_trend/populate_exit_trend`；`get_equity_dataframe/get_trade_dataframe/get_action_dataframe` 必须可用（main/live_trading 均依赖）。
 15. **多进程可 pickle**：新增 worker/任务入参必须是普通可 pickle 对象，函数定义在模块顶层（spawn 要求）；不得把 Cerebro/迭代器传入子进程。
-16. **筛选层契约**：筛选阈值改 config.yaml `stock_filter` + stock_filter.py 的 DEFAULT_* 双处；`output/stock_filter.csv` 列名变更需同步全部消费方（main.py、daily_signal.py、param_optimize.py 的 load_regime_map/routed_strategies/strategy_for_code）；报告缺失必须安全降级（不剔除、不路由）。优化目标列（profit_rate/sharpe/calmar）变更时同步 COMBO/ROLLING 列常量与 aggregate 排序列。
+16. **筛选层契约**：筛选阈值改 config.yaml `stock_filter` + stock_filter.py 的 DEFAULT_* 双处；`output/stock_filter.csv` 列名变更需同步全部消费方（main.py、live_trading.py、param_optimize.py 的 load_regime_map/routed_strategies/strategy_for_code）；报告缺失必须安全降级（不剔除、不路由）。优化目标列（profit_rate/sharpe/calmar）变更时同步 COMBO/ROLLING 列常量与 aggregate 排序列。
 
 ### D. 验证步骤（按顺序）
 

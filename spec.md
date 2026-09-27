@@ -18,7 +18,7 @@
 
 SkyQuant 是一套**全自动、可复现、可校验、可迭代**的 A 股日线量化策略回测流水线。
 
-一站式完成：行情拉取 → 缓存管理 → 股票池前置筛选（质量门/趋势门/regime 分类路由）→ 网格参数寻优 → 过拟合剔除 → 滚动稳定性校验 → 最优参数聚合 → 自动写入配置 → 策略回测 → 指标计算 → 可视化绘图 → 日志留存 → 手工交易复盘。
+一站式完成：行情拉取 → 缓存管理 → 股票池前置筛选（质量门/趋势门/regime 分类路由）→ 网格参数寻优 → 过拟合剔除 → 滚动稳定性校验 → 最优参数聚合 → 自动写入配置 → 策略回测 → 指标计算 → 可视化绘图 → 日志留存 → 实盘成交复盘与次日信号。
 
 系统按层解耦：配置层 config.yaml → 数据层 dataprovider.py → 筛选层 stock_filter.py → 策略插件层 strategy/ → 回测引擎层 main.py → 指标报表层 report.py → 寻优层 opt_pipeline/ → 入口 run_all.py；公共能力（手续费、路径、日志、broker 装配）收敛于 comm.py。策略只负责信号规则，不读文件、不拉数据、不筛选标的、不绘图；新增策略只需新增文件并注册 STRATEGY_MAPPING。
 
@@ -42,11 +42,13 @@ SkyQuant 是一套**全自动、可复现、可校验、可迭代**的 A 股日�
 
 - 全局日志系统：控制台 \+ 文件双输出
 
-- 手工实盘交易 VS 策略信号自动复盘匹配
+- 实盘真实成交 VS 策略信号自动复盘匹配
+
+- 实盘持仓管理：真实成交解析持仓/成本/浮盈，现算策略共识信号与次日操作建议，输出自包含 HTML 实盘持仓报告
 
 - 一键全流程启动脚本，支持缓存加速模式
 
-- 每日收盘后信号生成：自动运行策略，输出买卖/持有信号及次日操作建议
+- 每日收盘后一条命令完成实盘复盘与次日信号生成（live_trading.py）
 
 ### 1\.3 系统约束
 
@@ -70,28 +72,28 @@ SkyQuant 是一套**全自动、可复现、可校验、可迭代**的 A 股日�
 skyquant/
 ├── run_all.py                 # 一键全流水线入口（编排层）
 ├── main.py                    # 回测引擎层：Cerebro 封装/标的遍历/regime 自动路由
-├── daily_signal.py            # 每日信号生成
+├── live_trading.py            # 实盘交易模块：真实成交复盘 + 次日信号 + HTML 持仓报告
 ├── dataprovider.py            # 数据层（DataProvider）：行情拉取与缓存
 ├── stock_filter.py            # 股票池前置筛选层：Pairlist Filters + trend 趋势门 + regime 分类
 ├── comm.py                    # 公共工具层：手续费/路径常量/日志/broker 装配/黑名单
 ├── report.py                  # 指标与报表层：指标计算 + HTML 报表 + K 线图
-├── manual_trade_review.py     # 手工交易复盘模块
 ├── config.yaml                # 全局配置文件（全部可调参数外置）
-├── manual_trades.csv          # 实盘手工交易记录
+├── live_trades.csv            # 实盘真实成交记录
 ├── cache/
-│   └── stock_cache/           # 股票K线缓存CSV
+│   ├── stock_cache/           # 股票K线缓存CSV
+│   └── index_cache/           # 板块指数K线缓存CSV（index_daily，close 系字段）
 ├── output/
 │   ├── run.log                # 全流程运行日志（自动生成）
 │   ├── stock_filter.csv       # 前置筛选报告（pairlist/trend/regime，驱动策略路由）
 │   ├── equity_curve/         # 每标的每日净值序列
-│   ├── plots/                 # 每标的 HTML 回测报表与 Plotly K 线交互图
+│   ├── plots/                 # 每标的 HTML 回测报表、Plotly K 线图、live_portfolio_report.html 实盘持仓报告
 │   ├── metrics_summary.csv    # 指标汇总表
 │   ├── param_optimize_result.csv
 │   ├── out_sample_verify_result.csv
 │   ├── rolling_verify.csv
 │   ├── aggregate_common_param.csv
-│   ├── manual_review_result.csv
-│   └── daily_signal_*.csv       # 每日信号报告（按日期生成）
+│   ├── live_trade_review.csv  # 实盘成交 VS 策略信号匹配复盘
+│   └── live_signal_*.csv      # 实盘持仓信号报告（按日期生成）
 ├── strategy/
 │   ├── __init__.py
 │   ├── base.py
@@ -129,7 +131,7 @@ skyquant/
 
 4. 正式回测（main.py 不带 --strategy，按 regime 自动路由）、指标计算、绘图（全部标的批量）
 
-5. 手工交易复盘匹配与统计（批量）
+5. 实盘成交复盘匹配、次日信号与 HTML 持仓报告（批量）
 
 **目标标的集合**（寻优/回测/复盘共用同一集合）：
 
@@ -147,9 +149,11 @@ skyquant/
 
 - `python run_all.py --skip-data`缓存加速流水线
 
-每日信号生成（独立运行，不在 run_all.py 流水线中）：
+实盘复盘与次日信号（也可独立于 run_all.py 每日收盘后单独运行）：
 
-- `python daily_signal.py` 每日收盘后运行，输出买卖信号与次日操作建议
+- `python live_trading.py` 每日收盘后运行：解析 live_trades.csv 真实持仓，现算各持仓标的策略信号，输出买卖/持有/观望的次日操作建议与自包含 HTML 实盘持仓报告
+- `python live_trading.py --force-refresh` 强制全量下载行情
+- `python live_trading.py --stock-list 000725,601633` 仅复盘指定标的
 
 ---
 
@@ -159,7 +163,7 @@ skyquant/
 
 **唯一职责**：流程调度、日志管理、异常终止。
 
-**编排顺序**：行情拉取/缓存 → 股票池前置筛选（Pairlist Filters 常驻、--screen 追加 trend、regime 分类）→ 逐标的寻优 5 阶段闭环 → 批量回测（regime 自动路由）→ 手工复盘。
+**编排顺序**：行情拉取/缓存 → 股票池前置筛选（Pairlist Filters 常驻、--screen 追加 trend、regime 分类）→ 逐标的寻优 5 阶段闭环 → 批量回测（regime 自动路由）→ 实盘成交复盘与次日信号（live_trading）。
 
 **日志规范**：
 
@@ -198,11 +202,11 @@ skyquant/
 | range | 无 | close ≤ bb_lowerband **或** 跌幅 > drop_ratio | close > bb_upperband |
 | breakout | 无 | close > donchian_upper（唐奇安上轨突破） | close < donchian_lower（跌破下轨） |
 
-> 3 个策略均继承 BaseStrategy，追踪止损、动态止盈、ATR 仓位与日志接口由基类统一提供，子类只需实现 `populate_indicators` / `populate_entry_trend` / `populate_exit_trend` 三个钩子（命名对齐 freqtrade）。基类不设方向性入场门控；趋势过滤参数（ema_*/macd_*/min_volatility_ratio/adx_*）为 trend 专属，range/breakout 不持有。每只标的由 `stock_filter.classify_regime` 打 regime 标签（trend/range/breakout），路由到对应策略（param_optimize 经 `routed_strategies`、main.py 经 `strategy_for_code`、daily_signal 经 `routed_strategies` 收窄共识策略集）。
+> 3 个策略均继承 BaseStrategy，追踪止损、动态止盈、ATR 仓位与日志接口由基类统一提供，子类只需实现 `populate_indicators` / `populate_entry_trend` / `populate_exit_trend` 三个钩子（命名对齐 freqtrade）。基类不设方向性入场门控；趋势过滤参数（ema_*/macd_*/min_volatility_ratio/adx_*）为 trend 专属，range/breakout 不持有。每只标的由 `stock_filter.classify_regime` 打 regime 标签（trend/range/breakout），路由到对应策略（param_optimize 经 `routed_strategies`、main.py 经 `strategy_for_code`、live_trading 经 `routed_strategies` 收窄共识策略集）。
 
 ### 4.2 数据层 / 筛选层 / 公共工具层
 
-**dataprovider.py（数据层，`DataProvider` 类）**：只负责 Tushare 拉取、增量更新、CSV 缓存、字段标准化（`datetime/open/high/low/close/volume/preclose/amount/turn/pctChg`，前复权），不含任何交易逻辑；AStockData 继承 bt.feeds.PandasData。
+**dataprovider.py（数据层，`DataProvider` 类）**：只负责 Tushare 拉取、增量更新、CSV 缓存、字段标准化（`datetime/open/high/low/close/volume/preclose/amount/turn/pctChg`，前复权），不含任何交易逻辑；AStockData 继承 bt.feeds.PandasData。板块指数行情：`fetch_index(index_code)` / `load_cached_index(index_code)` 走 Tushare `index_daily`（仅保证 close/pre_close/pct_chg/vol/amount，主题指数常缺 open/high/low），缓存 `cache/index_cache/{code}.csv`，与个股同策略（当日缓存命中不调 API，否则增量追加）。
 
 **stock_filter.py（股票池前置筛选层）**：只读本地缓存，输出 `output/stock_filter.csv`。
 
@@ -215,6 +219,7 @@ skyquant/
   - 常驻名称规则：ST/*ST/退 名称剔除（自定义过滤器，freqtrade 无内建对应）
 - trend 趋势门（仅 --screen）：ADX 均值/强趋势占比/多头排列占比/均线年交叉/Kaufman 效率比/价格振幅/最长多头连涨；阈值 config `stock_filter.trend`
 - regime 分类（常驻）：breakout（振幅≥0.8 且 ADX≥22）> trend（ADX≥22、效率≥0.04、连涨≥150）> range；阈值 config `stock_filter.regime`
+- **regime 写回 config**：筛选后 `write_regime_to_config(filter_df)` 把每只标的 regime 文本级写入 config.yaml `stock_list` 对应条目（regex 块内插入/更新 `regime:` 行，保留注释，禁止 yaml.dump 全量重写）；stock_filter.py CLI 与 run_all.py 筛选步骤均执行
 - 消费接口：`load_regime_map()` / `routed_strategies(code, map, active)` / `strategy_for_code(code, map, pool, default)`；筛选报告缺失时安全降级（不剔除、不路由）
 
 **comm.py（公共工具层）**：路径常量唯一来源（PROJECT_ROOT/CACHE_DIR/STOCK_CACHE_DIR/OUTPUT_DIR/EQUITY_DIR/PLOT_DIR/LOG_FILE/CONFIG_PATH，Path 锚定不依赖 CWD）、`setup_logging`、`apply_blacklist`、`build_commission`、`apply_broker_settings`（setcash + 佣金 + 可选 slippage_perc）；AStockCommission 费率：买入=佣金+过户费，卖出=佣金+过户费+印花税。
@@ -280,7 +285,8 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 1. `{code}_{strategy_id}_report.html` — 自包含 HTML 回测报表（Bokeh INLINE 资源，可离线打开），包含：
    - 头部：标的名/代码、策略 id、回测区间、初始资金、最终净值、总收益率
    - 8 张 KPI 卡片：年化收益、最大回撤、Sharpe、Sortino、Calmar、胜率、盈亏比、总交易数
-   - Strategy Summary 表：胜负平、期望值、最佳/最差交易、持仓时长、连胜连亏、日度统计、B&H 与 alpha（freqtrade SUMMARY METRICS）
+   - Strategy Summary 表：表首为 Market Regime（前置筛选 regime 标签 → 路由策略）与 Sector（所属板块 + 板块指数名/代码，来自 config.yaml `stock_list` 条目的 sector/sector_index/sector_index_name）；其后为胜负平、期望值、最佳/最差交易、持仓时长、连胜连亏、日度统计、B&H 与 alpha（freqtrade SUMMARY METRICS）
+   - 板块指数 (Sector Index) 区块：板块/指数/代码/最新日期/最新点位/当日涨跌/回测窗口涨跌/近 20 交易日涨跌/标的窗口涨跌/相对强弱（标的−板块，涨红跌绿）；标的未配置 sector_index 或指数数据不可用时该区块跳过或降级为提示
    - 净值曲线 \+ 回撤联动图（Bokeh，共享 x 轴，hover tooltip）
    - Exit Reason Stats 表：四类平仓原因的笔数/胜率/均持时/盈亏聚合
    - Monthly Returns 月度收益热力表（年×12 月，正绿负红）
@@ -290,7 +296,7 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
    - Plotly K 线交互图相对链接
 
 2. `{code}_{strategy_id}_interactive.html` — freqtrade 风格 Plotly 交互图（plotly.js 内联，可离线打开）：
-   - K 线主图：红涨绿跌实心蜡烛；策略指标覆盖层（trend: EMA20/60；range: BB upper/mid/lower；breakout: Donchian upper/lower）
+   - K 线主图：红涨绿跌实心蜡烛；策略指标覆盖层（trend: EMA20/60；range: BB upper/mid/lower；breakout: Donchian upper/lower）；板块指数收盘线以副轴（secondary_y）叠加于主图（灰色细线，按股票交易日 reindex+ffill 对齐，指数数据缺失时不叠加）
    - 成交标记：青色上三角=入场，绿/红下三角=盈利/亏损出场（hover 显示价格、净盈亏、exit 类别），琥珀三角=期末未平仓；entry→exit 虚线连接每笔交易
    - 子图：成交量（红涨绿跌柱）、ATR14、**MACD（所有策略；trend 用指标线 macd/macdsignal/macdhist，range/breakout 从收盘价按 12/26/9 现算，仅绘图）**；trend 再追加 ADX（plus_di/minus_di/adx_min 阈值）
    - 1M/3M/6M/1Y/All 区间按钮、周末跳过、scrollZoom、暗色主题
@@ -332,42 +338,37 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 - 绝对底线（外样本训练段 ≥ 60 根，但无统计意义）：start\_date ≤ 2024-10-08
 
-### 4.7 手工交易复盘模块
+### 4.7 live_trading.py 实盘交易模块
 
-匹配规则：
+实盘唯一入口（`LiveTrading` 类），每日收盘后运行：以 live_trades.csv 的**真实成交**为准，复盘真实交易与策略信号的一致性，并现算每只持仓标的的次日信号，产出自包含 HTML 实盘持仓报告。run_all.py 流水线收尾也调用本模块（透传完整目标集）。
 
-- 按【股票代码 \+ 交易日】匹配策略信号
+**真实成交复盘（成交 VS 信号匹配）**：
 
-- 统计：信号匹配率、手工胜率、平均盈亏
+- 按【股票代码 + 交易日】匹配策略信号（策略成交经 get_trade_dataframe 还原 BUY/SELL 两日）
+- 统计：信号匹配率、实盘胜率、平均盈亏
+- 输出 `output/live_trade_review.csv`（config `stock_blacklist` 同步过滤；broker 装配与正式回测同口径）
 
-- 输出每日对照复盘表（config `stock_blacklist` 同步过滤；broker 装配与正式回测同口径）
+**持仓与次日信号生成**：
 
-### 4.8 daily_signal.py 每日信号生成模块
-
-每日收盘后独立运行，为 stock_list 中所有标的生成买卖信号。
-
-**信号生成逻辑**：
-
-- 读取 config.yaml 的 stock_list 与 strategy_params，应用 `stock_blacklist`
+- 读取 live_trades.csv 计算当前持仓（BUY 加权累加 - SELL 扣减，净量 > 0 即为持仓）；**信号范围仅限当前真实持仓标的**
 - 读取 output/stock_filter.csv：pairlist_passed=False 的标的跳过；按 regime 经 `routed_strategies` 收窄参与共识的策略集；报告缺失时安全降级为全部 active 策略
-- 读取 manual_trades.csv 计算当前持仓（BUY 累加 \- SELL 累加，净量 > 0 即为持仓）
-- 覆盖 data_provider.end_date 为当天日期（确保增量拉取覆盖今日行情）
-- 对每只标的的每个（路由后的）策略运行回测，提取 action_log（决策时信号日志）
+- 覆盖 data_provider.end_date 为当天日期（确保增量拉取覆盖今日行情；--force-refresh 可强制全量）
+- 对每只持仓标的的每个（路由后的）策略运行回测，提取 action_log（决策时信号日志）
 - 信号分类：最后一根 bar 触发买入/卖出 → BUY/SELL；已有持仓无新信号 → HOLD；无持仓无信号 → WAIT
 
-**多策略共识**：
-
-- 防御性优先级：SELL > BUY > HOLD > WAIT（任一策略发出 SELL 即覆盖）
+**多策略共识**：防御性优先级 SELL > BUY > HOLD > WAIT（任一策略发出 SELL 即覆盖）
 
 **操作建议**：
 
-- 持仓 \+ SELL → 卖出
-- 持仓 \+ BUY → 加仓
-- 持仓 \+ HOLD/WAIT → 持有
-- 未持仓 \+ BUY → 买入
-- 未持仓 \+ 其他 → 等待
+- 持仓 + SELL → 卖出
+- 持仓 + BUY → 加仓（BUY_MORE）
+- 持仓 + HOLD/WAIT → 持有
+- 未持仓 + BUY → 买入（新开仓）
+- 未持仓 + 其他 → 观望
 
-**输出**：`output/daily_signal_{YYYYMMDD}.csv` \+ 控制台三段式摘要（持仓操作、关注列表、统计汇总）
+**HTML 实盘持仓报告**（`output/plots/live_portfolio_report.html`）：账户 KPI（标的数/投入成本/市值/浮动盈亏/信号分布）、持仓总览与建议操作表、逐标的卡片（真实成交明细、策略最新信号、成交-信号匹配率、策略历史回测参考含 Sharpe/Calmar 中文评级、要点解释与下一步信号）。
+
+**输出**：`output/live_trade_review.csv` + `output/live_signal_{YYYYMMDD}.csv` + `output/plots/live_portfolio_report.html` + 控制台摘要。
 
 ---
 
@@ -409,9 +410,11 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 - plots/\*\_interactive\.html：Plotly freqtrade 风格 K 线 \+ 成交量 \+ 指标子图 \+ 成交标记交互图
 
-- manual\_review\_result\.csv：实盘复盘报告
+- plots/live\_portfolio\_report\.html：实盘持仓 HTML 复盘报告（账户 KPI、逐标的真实成交/最新信号/匹配率/回测参考/要点解释）
 
-- daily\_signal\_\*\.csv：每日信号报告（按日期生成，含每标的每策略信号、共识、操作建议）
+- live\_trade\_review\.csv：实盘成交 VS 策略信号匹配复盘
+
+- live\_signal\_\*\.csv：实盘持仓信号报告（按日期生成，含每持仓标的每策略信号、共识、操作建议）
 
 ---
 
@@ -479,7 +482,7 @@ scipy
 
 ## 10\. 迭代路线图
 
-- **V1\.0（当前）**：完整流水线、指标、绘图、日志、复盘、每日信号生成
+- **V1\.0（当前）**：完整流水线、指标、绘图、日志、实盘成交复盘、次日信号与 HTML 实盘持仓报告
 
 - **V1\.1**：新增卡玛比率、最大连续亏损、波动率
 

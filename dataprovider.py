@@ -54,6 +54,11 @@ class AStockData(bt.feeds.PandasData):
     )
 
 
+# Index daily bars (Tushare index_daily): thematic/CSI indexes may lack
+# open/high/low, so only close-based fields are guaranteed.
+INDEX_COLS = ["trade_date", "close", "pre_close", "pct_chg", "vol", "amount"]
+
+
 class DataProvider:
     """
     A-share market data source: encapsulates config loading, Tushare interface,
@@ -83,6 +88,8 @@ class DataProvider:
         # Cache root directory
         self.cache_root = cache_root or os.path.join(self.src_dir, "cache/stock_cache")
         os.makedirs(self.cache_root, exist_ok=True)
+        self.index_cache_root = os.path.join(self.src_dir, "cache/index_cache")
+        os.makedirs(self.index_cache_root, exist_ok=True)
 
         # Load config and initialize Tushare interface
         self.cfg = self.load_config()
@@ -248,3 +255,65 @@ class DataProvider:
         if not os.path.exists(cache_file):
             return None
         return self._filter_by_start_date(pd.read_csv(cache_file, parse_dates=["datetime"]))
+
+    # ---------------- Index data (sector index overlay / sector stats) ----------------
+    def _format_index_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Normalize index_daily output: datetime + close-based columns, sorted ascending"""
+        df = df[[c for c in INDEX_COLS if c in df.columns]].copy()
+        df["datetime"] = pd.to_datetime(df["trade_date"])
+        df.sort_values("datetime", inplace=True)
+        df.reset_index(drop=True, inplace=True)
+        return df
+
+    def _index_cache_path(self, index_code: str) -> str:
+        return os.path.join(self.index_cache_root, f"{index_code}.csv")
+
+    def fetch_index(self, index_code: str, force_refresh: bool = False) -> Optional[pd.DataFrame]:
+        """Fetch sector index daily bars via Tushare index_daily with local CSV cache.
+
+        Same freshness policy as fetch_stock: same-day cache hit skips the API,
+        otherwise incremental append from the cached latest date.
+        """
+        cache_path = self._index_cache_path(index_code)
+
+        def download(start_dt: str, end_dt: str) -> Optional[pd.DataFrame]:
+            try:
+                df = self.pro.index_daily(ts_code=index_code, start_date=start_dt, end_date=end_dt)
+            except Exception as err:
+                print(f"[Interface error] index {index_code} request failed: {err!s}")
+                return None
+            if df is None or df.empty:
+                return None
+            return self._format_index_df(df)
+
+        if force_refresh:
+            df = download(self.start_date, self.end_date)
+            if df is not None:
+                df.to_csv(cache_path, index=False)
+            return df
+
+        if os.path.exists(cache_path):
+            df_local = pd.read_csv(cache_path, parse_dates=["datetime"])
+            if df_local["datetime"].max().date() >= datetime.date.today():
+                return df_local
+            start_increment = df_local["datetime"].max().date().strftime("%Y%m%d")
+            df_increment = download(start_increment, self.end_date)
+            if df_increment is not None and not df_increment.empty:
+                df_merge = pd.concat([df_local, df_increment], ignore_index=True)
+                df_merge.drop_duplicates(subset=["datetime"], keep="last", inplace=True)
+                df_merge.sort_values("datetime", inplace=True)
+                df_merge.to_csv(cache_path, index=False)
+                return df_merge
+            return df_local
+
+        df = download(self.start_date, self.end_date)
+        if df is not None:
+            df.to_csv(cache_path, index=False)
+        return df
+
+    def load_cached_index(self, index_code: str) -> Optional[pd.DataFrame]:
+        """Read local index cache CSV only; no API call"""
+        cache_path = self._index_cache_path(index_code)
+        if not os.path.exists(cache_path):
+            return None
+        return pd.read_csv(cache_path, parse_dates=["datetime"])
