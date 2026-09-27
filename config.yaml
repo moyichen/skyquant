@@ -2,6 +2,8 @@ global_setting:
   initial_capital: 100000.0
   start_date: '20240101'
   end_date: '20260921'
+  slippage_perc: 0.0
+stock_blacklist: []
 commission_config:
   commission: 0.00025
   stamp_duty: 0.001
@@ -14,19 +16,32 @@ opt_pipeline:
   rolling_test_years: 1
   rolling_min_train_bars: 200
   rolling_min_test_bars: 100
-# Stock trendability screening (run_all.py --screen): filter out long-term
-# range-oscillating stocks before the trend-following pipeline. A stock passes
-# only when ALL thresholds are satisfied. See stock_screening.py for metric
-# definitions.
-stock_screening:
-  adx_period: 14
-  min_adx_mean: 18.0
-  min_trend_ratio: 0.30
-  min_bull_alignment: 0.35
-  max_ma_crossings_year: 6.0
-  min_efficiency: 0.04
-  min_price_range: 0.40
-  min_max_bull_streak: 150
+  optimize_metric: profit_rate
+stock_filter:
+  basic:
+    min_bars: 120
+    max_zero_volume_ratio: 0.01
+    max_gap_days: 20
+    min_avg_amount_yi: 0.5
+    min_avg_turn: 0.2
+    min_mean_close: 1.0
+  trend:
+    adx_period: 14
+    min_adx_mean: 18.0
+    min_trend_ratio: 0.3
+    min_bull_alignment: 0.35
+    max_ma_crossings_year: 6.0
+    min_efficiency: 0.04
+    min_price_range: 0.4
+    min_max_bull_streak: 150
+  regime:
+    breakout_min_range: 0.8
+    breakout_min_adx: 22.0
+    trend_min_adx: 22.0
+    trend_min_efficiency: 0.04
+    trend_min_bull_streak: 150
+    range_max_adx: 22.0
+    range_max_efficiency: 0.035
 stock_list:
 - code: '601606'
   name: 长城军工
@@ -82,18 +97,7 @@ stock_list:
   name: 厦门钨业
 strategy_params:
   '000725':
-    trend_follow:
-      trail_atr_multiple: 1.6
-      min_volatility_ratio: 0.025
-      max_risk_ratio: 0.025
-      trail_tighten_profit_multiple: 1.0
-      trail_tight_atr_multiple: 1.0
-      macd_fast: 10
-      macd_slow: 21
-      macd_signal: 7
-      adx_min: 20.0
-      max_loss_stop_ratio: 0.2
-    momentum:
+    trend:
       trail_atr_multiple: 1.4
       max_risk_ratio: 0.025
       trail_tighten_profit_multiple: 1.0
@@ -102,248 +106,170 @@ strategy_params:
       macd_slow: 21
       macd_signal: 7
       momentum_period: 18
-    multi_factor:
-      trail_atr_multiple: 1.9
-      max_risk_ratio: 0.02
+      min_volatility_ratio: 0.025
+      adx_min: 20.0
+      max_loss_stop_ratio: 0.2
+    breakout:
+      trail_atr_multiple: 2.0
+      breakout_period: 20
+      max_risk_ratio: 0.025
       trail_tighten_profit_multiple: 2.0
       trail_tight_atr_multiple: 1.0
-      macd_fast: 10
-      macd_slow: 21
-      macd_signal: 7
+      max_loss_stop_ratio: 0.2
+      cooldown_bars: 5
+      max_drawdown_limit: 0.2
   '000001':
-    trend_follow:
-      max_risk_ratio: 0.025
-      trail_atr_multiple: 1.6
-    momentum:
+    trend:
       trail_atr_multiple: 1.7
       max_risk_ratio: 0.02
       momentum_period: 20
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.6
   000538:
-    trend_follow:
-      trail_atr_multiple: 2.0
-      max_risk_ratio: 0.015
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.7
-    momentum:
+    trend:
       trail_atr_multiple: 1.5
       max_risk_ratio: 0.025
       momentum_period: 18
-    boll_ma:
+    range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.6
       boll_period: 18
+      drop_ratio: 0.18
   '000651':
-    momentum:
+    trend:
       max_risk_ratio: 0.025
       trail_atr_multiple: 1.4
       momentum_period: 22
-    boll_ma:
+    range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.8
       boll_period: 18
+      drop_ratio: 0.18
   000792:
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.025
-    momentum:
+    trend:
       trail_atr_multiple: 1.5
       max_risk_ratio: 0.02
       momentum_period: 22
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.6
   000938:
-    momentum:
+    trend:
       trail_atr_multiple: 1.5
       max_risk_ratio: 0.025
       momentum_period: 18
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.6
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.025
   '002222':
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.025
-    momentum:
+    trend:
       trail_atr_multiple: 1.4
       max_risk_ratio: 0.025
       momentum_period: 18
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.6
   '002466':
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.025
-    momentum:
+    trend:
       trail_atr_multiple: 1.4
       max_risk_ratio: 0.025
       momentum_period: 22
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.6
   '002475':
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.025
-    momentum:
+    trend:
       trail_atr_multiple: 1.4
       max_risk_ratio: 0.025
       momentum_period: 18
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.6
   '002774':
-    boll_ma:
+    trend:
+      trail_atr_multiple: 1.4
+      max_risk_ratio: 0.025
+      momentum_period: 18
+    range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.8
       boll_period: 20
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.025
-    momentum:
-      trail_atr_multiple: 1.4
-      max_risk_ratio: 0.025
-      momentum_period: 18
+      drop_ratio: 0.18
   '600111':
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.025
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.6
-    momentum:
+    trend:
       trail_atr_multiple: 1.5
       max_risk_ratio: 0.025
       momentum_period: 22
   '600309':
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.025
-    momentum:
+    trend:
       trail_atr_multiple: 1.7
       max_risk_ratio: 0.025
       momentum_period: 18
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.7
   '600549':
-    boll_ma:
+    trend:
+      trail_atr_multiple: 1.5
+      max_risk_ratio: 0.025
+      momentum_period: 18
+    range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.5
       boll_period: 18
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.025
-    momentum:
-      trail_atr_multiple: 1.5
-      max_risk_ratio: 0.025
-      momentum_period: 18
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.6
+      drop_ratio: 0.18
   '600900':
-    momentum:
+    trend:
       trail_atr_multiple: 1.5
       max_risk_ratio: 0.025
       momentum_period: 22
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.015
-    multi_factor:
-      max_risk_ratio: 0.018
-      trail_atr_multiple: 1.6
   '601138':
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.025
-    momentum:
+    trend:
       trail_atr_multiple: 1.4
       max_risk_ratio: 0.025
       momentum_period: 18
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.6
   '601166':
-    boll_ma:
+    trend:
+      trail_atr_multiple: 1.4
+      max_risk_ratio: 0.025
+      momentum_period: 18
+    range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.6
       boll_period: 20
-    momentum:
+      drop_ratio: 0.18
+  '601606':
+    trend:
       trail_atr_multiple: 1.4
       max_risk_ratio: 0.025
-      momentum_period: 18
-  '601606':
-    boll_ma:
+      momentum_period: 22
+    range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.5
       boll_period: 22
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.025
-    momentum:
+      drop_ratio: 0.18
+  '601899':
+    trend:
       trail_atr_multiple: 1.4
       max_risk_ratio: 0.025
       momentum_period: 22
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.6
-  '601899':
-    boll_ma:
+    range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.5
       boll_period: 18
-    momentum:
-      trail_atr_multiple: 1.4
-      max_risk_ratio: 0.025
-      momentum_period: 22
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.025
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.6
+      drop_ratio: 0.18
   '603173':
-    momentum:
+    trend:
       trail_atr_multiple: 1.4
       max_risk_ratio: 0.025
       momentum_period: 22
-    multi_factor:
-      max_risk_ratio: 0.02
-      trail_atr_multiple: 1.6
-    trend_follow:
-      trail_atr_multiple: 1.6
-      max_risk_ratio: 0.025
   '601816':
-    momentum:
+    trend:
       trail_atr_multiple: 1.4
       max_risk_ratio: 0.025
       momentum_period: 20
   '600809':
-    momentum:
+    trend:
       trail_atr_multiple: 1.4
       max_risk_ratio: 0.025
       momentum_period: 22
   '601633':
-    momentum:
+    trend:
       trail_atr_multiple: 1.5
       max_risk_ratio: 0.02
       momentum_period: 20
-    trend_follow:
-      trail_atr_multiple: 2.0
       min_volatility_ratio: 0.008
-      max_risk_ratio: 0.025
       trail_tighten_profit_multiple: 2.0
       trail_tight_atr_multiple: 0.8
       macd_fast: 10
       macd_slow: 21
       macd_signal: 7
       adx_min: 20.0
+      max_loss_stop_ratio: 0.2
+    breakout:
+      trail_atr_multiple: 1.8
+      breakout_period: 30
+      max_risk_ratio: 0.025
+      trail_tighten_profit_multiple: 2.0
+      trail_tight_atr_multiple: 0.8
       max_loss_stop_ratio: 0.2

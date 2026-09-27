@@ -1,72 +1,47 @@
 {
   "cases": {
-    "000725|boll_ma": {
+    "000725|breakout": {
       "bars": 660,
-      "final_value": 100000.0,
-      "n_buys": 0,
-      "n_sells": 0,
-      "n_trades": 0,
-      "n_wins": 0,
+      "final_value": 104731.1098,
+      "n_buys": 15,
+      "n_sells": 11,
+      "n_trades": 11,
+      "n_wins": 6,
+      "params": {
+        "breakout_period": 20,
+        "max_risk_ratio": 0.02,
+        "trail_atr_multiple": 2.0
+      },
+      "total_return": 0.047311
+    },
+    "000725|range": {
+      "bars": 660,
+      "final_value": 111932.753,
+      "n_buys": 13,
+      "n_sells": 11,
+      "n_trades": 11,
+      "n_wins": 7,
       "params": {
         "boll_period": 20,
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 1.6
-      },
-      "total_return": 0.0
-    },
-    "000725|momentum": {
-      "bars": 660,
-      "final_value": 106308.0854,
-      "n_buys": 15,
-      "n_sells": 13,
-      "n_trades": 13,
-      "n_wins": 7,
-      "params": {
-        "max_risk_ratio": 0.02,
-        "momentum_period": 20,
-        "trail_atr_multiple": 1.5
-      },
-      "total_return": 0.063081
-    },
-    "000725|multi_factor": {
-      "bars": 660,
-      "final_value": 105526.3624,
-      "n_buys": 12,
-      "n_sells": 10,
-      "n_trades": 10,
-      "n_wins": 7,
-      "params": {
-        "max_risk_ratio": 0.02,
-        "trail_atr_multiple": 1.7
-      },
-      "total_return": 0.055264
-    },
-    "000725|short_reversal": {
-      "bars": 660,
-      "final_value": 100000.0,
-      "n_buys": 0,
-      "n_sells": 0,
-      "n_trades": 0,
-      "n_wins": 0,
-      "params": {
         "drop_ratio": 0.18,
         "max_risk_ratio": 0.02,
         "trail_atr_multiple": 2.0
       },
-      "total_return": 0.0
+      "total_return": 0.119328
     },
-    "000725|trend_follow": {
+    "000725|trend": {
       "bars": 660,
-      "final_value": 104049.0138,
-      "n_buys": 14,
-      "n_sells": 10,
-      "n_trades": 10,
-      "n_wins": 7,
+      "final_value": 104414.6171,
+      "n_buys": 15,
+      "n_sells": 13,
+      "n_trades": 13,
+      "n_wins": 6,
       "params": {
-        "max_risk_ratio": 0.015,
+        "max_risk_ratio": 0.02,
+        "momentum_period": 20,
         "trail_atr_multiple": 1.6
       },
-      "total_return": 0.04049
+      "total_return": 0.044146
     }
   },
   "meta": {
@@ -76,6 +51,6 @@
     "stocks": [
       "000725"
     ],
-    "updated_at": "2026-09-26 17:30:22"
+    "updated_at": "2026-09-27 06:03:38"
   }
 }

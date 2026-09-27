@@ -17,12 +17,20 @@ class BaseStrategy(bt.Strategy):
       - 动态止盈（浮盈达阈值后收紧追踪止损，锁定利润但不封顶上行）
       - get_equity_dataframe / get_trade_dataframe / get_action_dataframe 统一输出接口
 
-    子类只需重写三个钩子：
-      - _init_indicators()：初始化策略专属指标（如均线、动量、布林带）
-      - _on_entry()：空仓时判断是否开仓（满足条件调用 self._open_position(atr_multiple)）
-      - _on_exit()：持仓时判断是否平仓（满足条件调用 self._close_position(reason)，
+    子类只需重写三个钩子（对齐 freqtrade populate_* 术语）：
+      - populate_indicators()：初始化策略专属指标（如均线、动量、布林带）
+      - populate_entry()：空仓时判断是否开仓（满足条件调用 self._open_position(atr_multiple)）
+      - populate_exit()：持仓时判断是否平仓（满足条件调用 self._close_position(reason)，
                     reason 描述卖出逻辑，写入 action_log 与 trade_log 供人工分析；
-                    追踪止损与动态止盈由基类 next() 在调用 _on_exit 前自动更新 stop_price）
+                    追踪止损与动态止盈由基类 next() 在调用 populate_exit 前自动更新 stop_price）
+
+    开仓门控（设计原则：基类不设方向性过滤）：
+      入场判断完全由各策略 populate_entry() 自管（freqtrade 分层：方向性过滤属于
+      策略 alpha，标的适配交给 stock_filter 筛选层）。trend 策略自带 EMA/MACD/波动率/ADX 趋势过滤。
+      基类全局层只挂风控保护（对齐 freqtrade Protections，默认全关）：
+      - CooldownPeriod（cooldown_bars）：卖出成交后 N 根 bar 内禁止新开仓
+      - StoplossGuard（stoploss_guard_*）：回看窗口内止损平仓达上限即暂停开仓
+      - MaxDrawdown（max_drawdown_limit）：净值自峰值回撤超阈值期间禁止新开仓
 
     开仓执行模型（买入限价单，卖出市价单）：
       - 买入：信号日收盘触发后，以触发收盘价为限价挂单，仅在【下一交易日】有效，
@@ -30,15 +38,6 @@ class BaseStrategy(bt.Strategy):
         避免跳空高开放大买入成本（如节后首日高开）。
       - 卖出：不受限价约束，信号次日以市价成交，确保止损/退出一定执行。
       - 同一时间只允许一个在途订单；订单未了结前不再产生新信号。
-
-    开仓条件（全局四重趋势过滤，由基类统一执行，子类无法绕过）：
-      1. 均线趋势：EMA(sma_fast) > EMA(sma_slow)，只做多头排列
-      2. MACD 多头：DIF > 0（零轴上方）且 DIF > DEA（金叉状态）
-         且 DIF 持续上行 macd_momentum_bars 根、MACD 柱持续放大（动量增强）
-      3. 波动率过滤：ATR/收盘价 > min_volatility_ratio，过滤横盘假突破
-      4. ADX 趋势强度：ADX >= adx_min（低于阈值视为横盘震荡，直接不开仓）
-         且 +DI > -DI（多头方向）；ADX 区分趋势行情与震荡行情
-      全部通过后才调用子类 _on_entry() 判断策略专属信号。
 
     平仓条件（多层级，按优先级）：
       1. 纯动态追踪止损（默认唯一出场）：跌破 stop_price → 立即平仓
@@ -50,7 +49,7 @@ class BaseStrategy(bt.Strategy):
            止损倍数收紧为 trail_tight_atr_multiple，
            即 stop = 最高价 - trail_tight_atr_multiple × ATR
          - 无固定止盈（take_profit_atr_multiple 默认 None），全程跟随趋势吃满波段
-      2. 子类信号止损：_on_exit() 中检查 stop_price 或策略专属出场信号
+      2. 子类信号止损：populate_exit() 中检查 stop_price 或策略专属出场信号
 
     风险提示（使用回测结果前必须理解，详见 spec.md 第 9 章）：
       1. 尾部风险：max_loss_stop_ratio 启用时单笔最差亏损可达账户 -15% 左右
@@ -67,16 +66,6 @@ class BaseStrategy(bt.Strategy):
     params = (
         ("atr_period", 14),                        # ATR 计算周期
         ("max_risk_ratio", 0.02),                  # 单笔最大风险占总资金比例
-        # ---- 全局四重趋势过滤参数 ----
-        ("sma_fast", 20),                          # 均线趋势过滤：快线周期
-        ("sma_slow", 60),                          # 均线趋势过滤：慢线周期
-        ("macd_fast", 12),                         # MACD 快线 EMA 周期
-        ("macd_slow", 26),                         # MACD 慢线 EMA 周期
-        ("macd_signal", 9),                        # MACD 信号线（DEA）周期
-        ("macd_momentum_bars", 2),                 # MACD 多头动量确认：DIF/柱需连续放大的 bar 数
-        ("min_volatility_ratio", 0.015),           # 波动率过滤：ATR/收盘价下限
-        ("adx_period", 14),                        # ADX/DMI 计算周期
-        ("adx_min", 20),                           # ADX 趋势强度下限（< 视为横盘震荡不开仓；>25 强趋势）
         # ---- 亏损侧机制（低价标的：放宽最差止损 + 首次亏损摊低加仓）----
         ("max_loss_stop_ratio", 0.30),             # 最差止损：收盘价较持仓均价亏损达 30% 才止损（None=ATR 初始止损；启用时追踪止损只在盈利侧生效）
         ("average_down_drop", 0.10),               # 首次亏损达该比例时摊低加仓（None 关闭；每次交易只加一次）
@@ -85,23 +74,18 @@ class BaseStrategy(bt.Strategy):
         ("take_profit_atr_multiple", None),        # 固定止盈距离（ATR 倍数）；默认 None=纯追踪止损
         ("trail_tighten_profit_multiple", None),   # 动态止盈激活门槛：浮盈达该 ATR 倍数后收紧止损；None 关闭
         ("trail_tight_atr_multiple", 0.8),         # 动态止盈激活后的收紧追踪止损 ATR 倍数
+        # ---- 全局风控保护（对齐 freqtrade Protections；默认全部关闭）----
+        ("cooldown_bars", None),                   # CooldownPeriod：卖出成交后 N 根 bar 内禁止新开仓
+        ("stoploss_guard_trade_limit", None),      # StoplossGuard：回看窗口内止损平仓达该次数即暂停开仓
+        ("stoploss_guard_lookback_bars", 60),      #   StoplossGuard 回看窗口（bar 数）
+        ("stoploss_guard_pause_bars", 24),         #   StoplossGuard 暂停时长（bar 数）
+        ("max_drawdown_limit", None),              # MaxDrawdown：净值自峰值回撤超该比例期间禁止新开仓
     )
 
     # ===================== 初始化 =====================
     def __init__(self):
         # 通用指标
         self.atr = bt.indicators.ATR(self.data, period=self.p.atr_period)
-        # 全局趋势过滤指标（所有策略共用）
-        self.sma_fast = bt.indicators.EMA(self.data.close, period=self.p.sma_fast)
-        self.sma_slow = bt.indicators.EMA(self.data.close, period=self.p.sma_slow)
-        self.macd = bt.indicators.MACDHisto(
-            self.data.close,
-            period_me1=self.p.macd_fast,
-            period_me2=self.p.macd_slow,
-            period_signal=self.p.macd_signal,
-        )
-        # ADX/DMI：区分趋势行情与震荡行情（adx 趋势强度，plusDI/minusDI 判定方向）
-        self.dmi = bt.indicators.DMI(self.data, period=self.p.adx_period)
         # 交易 / 净值记录容器
         self.equity_log = []
         self.trade_log = []
@@ -132,10 +116,16 @@ class BaseStrategy(bt.Strategy):
         self._loss_floor = None
         # 本次交易是否已执行过摊低加仓（每笔交易只加一次）
         self._averaged_down = False
+        # 全局风控保护状态（freqtrade Protections 对齐）
+        self._cooldown_until_bar = -1    # 冷却截止 bar（含），卖出成交后设定
+        self._stop_exit_bars = []        # 止损平仓成交的 bar 索引（StoplossGuard 回看用）
+        self._guard_until_bar = -1       # StoplossGuard 暂停截止 bar（含）
+        self._equity_peak = None         # 净值峰值（MaxDrawdown 用）
+        self._last_exit_reason = None    # 最近一笔平仓原因（notify_trade 留存，供 Protections 判定）
         # 子类专属指标
-        self._init_indicators()
+        self.populate_indicators()
 
-    def _init_indicators(self):
+    def populate_indicators(self):
         """子类重写：初始化策略专属指标（如均线、动量、布林带）"""
 
     # ===================== 订单与交易回调 =====================
@@ -199,6 +189,8 @@ class BaseStrategy(bt.Strategy):
                     break
             self.entry_size = None
             self.exit_price = None
+            # 留存本次平仓原因供 _process_order_events 的 Protections 判定（本回调先于其执行）
+            self._last_exit_reason = self.exit_reason
             self.exit_reason = None
         except Exception as e:
             print(f"Trade record parsing error: {e}, trade={trade}")
@@ -304,6 +296,13 @@ class BaseStrategy(bt.Strategy):
                     avg_cost = self._hold_cost / self._hold_size if self._hold_size > 0 else None
                     row["avg_cost"] = round(avg_cost, 4) if avg_cost else None
                     self.exit_price = event["exec_price"]
+                    # Protections 状态：卖出成交记录冷却窗口与止损事件
+                    bar_no = len(self) - 1
+                    if self.p.cooldown_bars:
+                        self._cooldown_until_bar = bar_no + int(self.p.cooldown_bars)
+                    if self._last_exit_reason and "stop" in self._last_exit_reason:
+                        self._stop_exit_bars.append(bar_no)
+                    self._last_exit_reason = None
                     self._reset_position_state()
             else:
                 # 限价单未成交放弃 / 被拒 / 保证金不足：买入未建仓；卖出失败则保留持仓等下根 bar 重试
@@ -367,7 +366,7 @@ class BaseStrategy(bt.Strategy):
         self._averaged_down = False
 
     def _trail_stop_reason(self):
-        """生成追踪止损卖出原因（含是否已动态收紧），供子类 _on_exit 使用"""
+        """生成追踪止损卖出原因（含是否已动态收紧），供子类 populate_exit 使用"""
         # 止损仍停在最差地板上 = 亏损侧最大容忍度触发
         if self._loss_floor is not None and self.stop_price <= self._loss_floor:
             return (
@@ -412,17 +411,18 @@ class BaseStrategy(bt.Strategy):
         if self._pending_order is not None:
             return
         if not self.position:
-            # 全局四重趋势过滤：全部通过才允许子类判断专属入场信号
-            if self._entry_filters_ok():
-                self._on_entry()
+            # 基类不设方向性入场门控：入场过滤完全由各策略 populate_entry 自管；
+            # 仅挂全局风控保护（freqtrade Protections：冷却/止损守卫/最大回撤）
+            if self._protections_allow_entry():
+                self.populate_entry()
             return
         # 固定止盈：显式配置（非 None）且收盘价触及时立即平仓（默认关闭，纯追踪止损）
         if self.take_price is not None and self.data.close[0] >= self.take_price:
             self._close_position(f"take_profit: close {self.data.close[0]:.2f} >= take_price {self.take_price:.2f}")
             return
-        # 追踪止损 + 动态止盈：更新 stop_price（只上不下），供子类 _on_exit 检查
+        # 追踪止损 + 动态止盈：更新 stop_price（只上不下），供子类 populate_exit 检查
         self._update_trailing_stop()
-        self._on_exit()
+        self.populate_exit()
         # 摊低加仓：出场优先；仍持仓且无在途订单时，首次亏损达阈值按比例加仓摊低成本
         if self._pending_order is None and self.position and self._loss_floor is not None \
                 and self.p.average_down_drop is not None and not self._averaged_down and self._hold_size > 0:
@@ -447,45 +447,6 @@ class BaseStrategy(bt.Strategy):
         action_index = len(self.action_log)
         self.action_log.append(self._new_action_row("BUY", trigger_price, add_size, reason))
         self._pending_order = {"ref": order.ref, "side": "BUY", "action_index": action_index, "atr_multiple": None}
-
-    def _entry_filters_ok(self):
-        """全局四重趋势过滤：均线多头 + MACD 多头 + 波动率达标 + ADX 趋势强度，全部通过才可开仓"""
-        # 1. 均线趋势：快线在慢线上方（多头排列；预热期 NaN 比较为 False，天然不通过）
-        if not (self.sma_fast[0] > self.sma_slow[0]):
-            return False
-        # 2. MACD 多头：零轴上方 + 金叉状态 + 动量增强
-        if not self._macd_bullish():
-            return False
-        # 3. 波动率过滤：ATR/收盘价超过下限，过滤横盘假突破
-        if not (self.atr[0] / self.data.close[0] > self.p.min_volatility_ratio):
-            return False
-        # 4. ADX 趋势强度：低于下限视为横盘震荡直接不开仓（预热期 NaN 天然不通过）
-        adx_val = self.dmi.adx[0]
-        if math.isnan(adx_val) or adx_val < self.p.adx_min:
-            return False
-        #    方向确认：+DI > -DI 才算多头趋势
-        if not (self.dmi.plusDI[0] > self.dmi.minusDI[0]):
-            return False
-        return True
-
-    def _macd_bullish(self):
-        """MACD 多头判定：DIF>0 且金叉状态，且 DIF 与柱连续 macd_momentum_bars 根放大"""
-        dif = self.macd.macd
-        dea = self.macd.signal
-        hist = self.macd.histo
-        # 零轴上方：中期多头行情
-        if not (dif[0] > 0):
-            return False
-        # 金叉状态：DIF 在 DEA 上方
-        if not (dif[0] > dea[0]):
-            return False
-        # 动量增强：DIF 持续上行 且 MACD 柱持续放大（连续 N 根）
-        for i in range(self.p.macd_momentum_bars):
-            if not (dif[-i] > dif[-i - 1]):
-                return False
-            if not (hist[-i] > hist[-i - 1]):
-                return False
-        return True
 
     def _update_trailing_stop(self):
         """更新追踪止损：基础 chandelier 止损 + 盈利激活后的动态收紧"""
@@ -518,11 +479,39 @@ class BaseStrategy(bt.Strategy):
         if candidate_stop > self.stop_price:
             self.stop_price = candidate_stop
 
-    def _on_entry(self):
+    def _protections_allow_entry(self):
+        """全局风控保护（对齐 freqtrade Protections）：冷却期 / 止损守卫 / 最大回撤，任一触发则禁止新开仓。
+
+        全部默认关闭；只拦开仓，不影响平仓。仅基于已成交事实（卖出成交 bar、止损事件、净值回撤），
+        不含任何方向性判断。
+        """
+        bar_no = len(self) - 1
+        # CooldownPeriod：卖出成交后 N 根 bar 冷却
+        if bar_no <= self._cooldown_until_bar:
+            return False
+        # StoplossGuard：暂停期内直接拒绝
+        if bar_no <= self._guard_until_bar:
+            return False
+        if self.p.stoploss_guard_trade_limit:
+            cutoff = bar_no - int(self.p.stoploss_guard_lookback_bars)
+            recent_stops = sum(1 for b in self._stop_exit_bars if b >= cutoff)
+            if recent_stops >= int(self.p.stoploss_guard_trade_limit):
+                self._stop_exit_bars = []  # 清零重新计数，避免暂停期内重复触发
+                self._guard_until_bar = bar_no + int(self.p.stoploss_guard_pause_bars)
+                return False
+        # MaxDrawdown：净值自峰值回撤超阈值期间禁止开仓（恢复后自动解禁）
+        if self.p.max_drawdown_limit:
+            equity = self.broker.getvalue()
+            self._equity_peak = equity if self._equity_peak is None else max(self._equity_peak, equity)
+            if self._equity_peak > 0 and (self._equity_peak - equity) / self._equity_peak > self.p.max_drawdown_limit:
+                return False
+        return True
+
+    def populate_entry(self):
         """子类重写：空仓时判断是否开仓；满足条件调用 self._open_position(atr_multiple)"""
         raise NotImplementedError
 
-    def _on_exit(self):
+    def populate_exit(self):
         """子类重写：持仓时判断是否平仓；满足条件调用 self._close_position()"""
         raise NotImplementedError
 

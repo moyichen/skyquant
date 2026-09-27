@@ -3,7 +3,7 @@ import argparse
 import backtrader as bt
 import pandas as pd
 
-from comm import AStockCommission
+from comm import OUTPUT_DIR, PROJECT_ROOT, apply_broker_settings, build_commission
 from data_source import AStockData, DataSource
 from strategy import DEFAULT_STRATEGY_PARAMS, STRATEGY_MAPPING
 
@@ -11,24 +11,25 @@ REQUIRED_COLS = ["trade_date", "stock_code", "side"]
 
 
 class ManualTradeReview:
-    def __init__(self, config_path="config.yaml", trade_csv="manual_trades.csv", stock_list=None):
+    def __init__(self, config_path="config.yaml", trade_csv=None, stock_list=None):
         self.ds = DataSource(config_path=config_path)
         self.cfg = self.ds.cfg
+        if trade_csv is None:
+            trade_csv = str(PROJECT_ROOT / "manual_trades.csv")
         # dtype=str to prevent loss of leading zeros in stock codes (000725 -> 725)
         self.trade_df = pd.read_csv(trade_csv, parse_dates=["trade_date"], dtype={"stock_code": str})
         if stock_list:
             wanted = {c.strip() for c in stock_list.split(",") if c.strip()}
             self.trade_df = self.trade_df[self.trade_df["stock_code"].isin(wanted)]
+        # Config blacklist overrides the whitelist stock_list
+        blacklist = {str(c) for c in (self.cfg.get("stock_blacklist") or [])}
+        if blacklist:
+            self.trade_df = self.trade_df[~self.trade_df["stock_code"].isin(blacklist)]
         missing = [c for c in REQUIRED_COLS if c not in self.trade_df.columns]
         if missing:
             raise ValueError(f"manual_trades.csv is missing required columns: {missing}, existing columns: {list(self.trade_df.columns)}, standard format is trade_date,stock_code,side,price,size")
         self.result_list = []
-        comm_cfg = self.cfg["commission_config"]
-        self.comminfo = AStockCommission(
-            commission=comm_cfg["commission"],
-            stamp_duty=comm_cfg["stamp_duty"],
-            transfer_fee=comm_cfg["transfer_fee"],
-        )
+        self.comminfo = build_commission(self.cfg)
         # Default params for each strategy, used as fallback when a stock has no optimized config
         self.default_strategy_params = DEFAULT_STRATEGY_PARAMS
 
@@ -53,9 +54,8 @@ class ManualTradeReview:
             volume="volume",
         )
         cerebro.adddata(feed)
-        # Keep capital and commission settings consistent with the formal backtest
-        cerebro.broker.setcash(self.cfg["global_setting"]["initial_capital"])
-        cerebro.broker.addcommissioninfo(self.comminfo)
+        # Keep capital, commission and slippage consistent with the formal backtest
+        apply_broker_settings(cerebro.broker, self.cfg, float(self.cfg["global_setting"]["initial_capital"]), self.comminfo)
         strategy_instance = cerebro.run()[0]
         trades_df = strategy_instance.get_trade_dataframe()
         # A closing trade corresponds to two signals: buy on entry_date / sell on exit_date
@@ -107,7 +107,9 @@ class ManualTradeReview:
                 )
         return pd.DataFrame(self.result_list)
 
-    def summary_report(self, out_csv="output/manual_review_result.csv"):
+    def summary_report(self, out_csv=None):
+        if out_csv is None:
+            out_csv = str(OUTPUT_DIR / "manual_review_result.csv")
         df = self.match_manual_trade()
         df.to_csv(out_csv, index=False, encoding="utf8")
         print("===== Manual Trades vs Strategy Signals Review Report =====")

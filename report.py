@@ -1,15 +1,21 @@
-"""Plotting and reporting utilities for SkyQuant backtests.
+"""Unified report layer for SkyQuant backtests.
+
+Metrics and charting live in one module so the engine (main.py) and the
+optimization workers share a single metrics definition.
 
 Exports:
-    render_interactive_chart: btplotting-based K-line + indicators HTML chart
-    render_report:            self-contained HTML backtest report (KPIs,
-                              equity curve, drawdown, trades, analyzers)
+    calc_equity_metrics:       total/annualized return, max drawdown, Sharpe, Calmar
+    calc_metrics:              equity metrics + trade stats (win rate, profit factor)
+    render_interactive_chart:  btplotting-based K-line + indicators HTML chart
+    render_report:             self-contained HTML backtest report (KPIs,
+                               equity curve, drawdown, trades, analyzers)
 """
 
 import os
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 from backtrader.utils.py3 import MAXINT
 from bokeh.embed import components
@@ -22,6 +28,75 @@ from bokeh.models import (
 )
 from bokeh.plotting import figure
 from bokeh.resources import INLINE
+
+
+# ===================== Metrics =====================
+def calc_equity_metrics(equity_df: pd.DataFrame, risk_free_rate: float = 0.02) -> dict:
+    """Performance metrics derived from the daily equity curve alone.
+
+    Also used by the optimization pool workers (which have no closed-trade
+    table), so keep this self-contained and cheap.
+    Returns: total_return, annual_return, max_drawdown, sharpe_ratio, calmar.
+    """
+    equity = equity_df["equity"].values
+    dates = pd.to_datetime(equity_df["datetime"])
+    daily_ret = equity_df["equity"].pct_change().dropna()
+
+    # Max drawdown
+    cum_max = equity_df["equity"].cummax()
+    drawdown = (equity_df["equity"] - cum_max) / cum_max
+    max_dd = float(drawdown.min())
+
+    # Annualized return
+    days = (dates.iloc[-1] - dates.iloc[0]).days
+    total_return = float(equity[-1] / equity[0] - 1)
+    annual_return = (1 + total_return) ** (365.0 / days) - 1 if days > 0 else 0.0
+
+    # Sharpe ratio
+    daily_rf = (1 + risk_free_rate) ** (1 / 365) - 1
+    excess_ret = daily_ret - daily_rf
+    sharpe = float(np.sqrt(252) * excess_ret.mean() / excess_ret.std()) if excess_ret.std() != 0 else 0.0
+
+    # Calmar ratio = annualized return / absolute max drawdown
+    calmar = float(annual_return / abs(max_dd)) if max_dd < 0 else 0.0
+
+    return {
+        "total_return": round(total_return, 4),
+        "annual_return": round(annual_return, 4),
+        "max_drawdown": round(max_dd, 4),
+        "sharpe_ratio": round(sharpe, 4),
+        "calmar_ratio": round(calmar, 4),
+    }
+
+
+def calc_metrics(equity_df: pd.DataFrame, trades_df: pd.DataFrame, risk_free_rate: float = 0.02) -> dict:
+    """
+    equity_df: datetime,equity
+    trades_df: entry_date,exit_date,profit_loss_net (net profit after fees)
+    risk_free_rate: annualized risk-free rate 2%
+    return dict: equity performance metrics plus win rate and profit factor
+    """
+    metrics = calc_equity_metrics(equity_df, risk_free_rate=risk_free_rate)
+
+    if len(trades_df) == 0:
+        win_rate = 0
+        profit_factor = 0
+    else:
+        win_trades = trades_df[trades_df["profit_loss_net"] > 0]
+        lose_trades = trades_df[trades_df["profit_loss_net"] <= 0]
+        win_rate = len(win_trades) / len(trades_df)
+        gross_profit = win_trades["profit_loss_net"].sum()
+        gross_loss = abs(lose_trades["profit_loss_net"].sum())
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else np.inf
+
+    metrics.update(
+        {
+            "win_rate": round(win_rate, 4),
+            "profit_factor": round(profit_factor, 4),
+            "total_trades": len(trades_df),
+        }
+    )
+    return metrics
 
 
 # ===================== Value formatting helpers =====================

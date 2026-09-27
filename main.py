@@ -6,27 +6,28 @@ and writes equity curves, plots and the metrics summary under output/.
 
 import argparse
 import logging
-import sys
-from pathlib import Path
 
 import backtrader as bt
 import pandas as pd
 
-from comm import AStockCommission
+from comm import (
+    EQUITY_DIR,
+    OUTPUT_DIR,
+    PLOT_DIR,
+    PROJECT_ROOT,
+    apply_broker_settings,
+    build_commission,
+    setup_logging,
+)
 from data_source import AStockData, DataSource
-from metrics_utils import calc_metrics
-from plot_utils import render_interactive_chart, render_report
+from report import calc_metrics, render_interactive_chart, render_report
 from strategy import STRATEGY_DESCRIPTIONS, STRATEGY_MAPPING
 
 # ========== Paths (anchored to project root, independent of CWD) ==========
-BASE_DIR = Path(__file__).parent.resolve()
-OUTPUT_DIR = BASE_DIR / "output"
-EQUITY_OUT = OUTPUT_DIR / "equity_curve"
-PLOT_OUT = OUTPUT_DIR / "plots"
 METRICS_SUMMARY = OUTPUT_DIR / "metrics_summary.csv"
-TRADE_CSV = BASE_DIR / "manual_trades.csv"
+TRADE_CSV = PROJECT_ROOT / "manual_trades.csv"
 
-DEFAULT_STRATEGY = "trend_follow"
+DEFAULT_STRATEGY = "trend"
 
 # Analyzers registered on every Cerebro; results surface in the HTML report.
 ANALYZER_NAMES = ("returns", "sharpe", "drawdown", "tradeanalyzer", "sqn")
@@ -34,18 +35,9 @@ ANALYZER_NAMES = ("returns", "sharpe", "drawdown", "tradeanalyzer", "sqn")
 logger = logging.getLogger(__name__)
 
 
-def setup_logging():
-    """Console logging only; run_all.py captures this output into run.log."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        stream=sys.stdout,
-    )
-
-
 def prepare_output_dirs():
     """Create output directories (cache dir is handled by DataSource)."""
-    for d in (OUTPUT_DIR, EQUITY_OUT, PLOT_OUT):
+    for d in (OUTPUT_DIR, EQUITY_DIR, PLOT_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 
@@ -63,8 +55,9 @@ def get_strategy_param(param_pool, code, strategy_id):
     return strategy_cls, params
 
 
-def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strategy_id, force_refresh, stock_name=None):
+def run_backtest(dataSource, comminfo, cfg, param_pool, code, strategy_id, force_refresh, stock_name=None):
     """Run one backtest for a single stock/strategy; return metrics dict or None."""
+    global_setting = cfg["global_setting"]
     df_data = dataSource.fetch_stock(code, force_refresh)
     if df_data is None:
         logger.warning(f"Failed to fetch market data for {code}, skipping")
@@ -87,8 +80,8 @@ def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strateg
     )
     cerebro.adddata(data_feed)
 
-    cerebro.broker.setcash(global_setting["initial_capital"])
-    cerebro.broker.addcommissioninfo(comminfo)
+    # Unified broker wiring: cash + A-share commission + optional slippage
+    apply_broker_settings(cerebro.broker, cfg, float(global_setting["initial_capital"]), comminfo)
 
     # Analyzers feed the HTML report (returns / sharpe / drawdown / trades / sqn)
     cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
@@ -103,7 +96,7 @@ def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strateg
     trades_df = strategy_instance.get_trade_dataframe()
     action_df = strategy_instance.get_action_dataframe()
 
-    equity_path = EQUITY_OUT / f"{code}_{strategy_id}_equity.csv"
+    equity_path = EQUITY_DIR / f"{code}_{strategy_id}_equity.csv"
     equity_df.to_csv(equity_path, index=False, encoding="utf-8")
 
     metrics = calc_metrics(equity_df, trades_df)
@@ -124,7 +117,7 @@ def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strateg
     # Render btplotting K-line chart (best-effort; optional dependency)
     interactive_html = None
     try:
-        interactive_html = render_interactive_chart(strategy_instance, PLOT_OUT, code, strategy_id)
+        interactive_html = render_interactive_chart(strategy_instance, PLOT_DIR, code, strategy_id)
         logger.info(f"Interactive chart saved to {interactive_html}")
     except Exception as e:
         logger.warning(f"Interactive chart unavailable for {code}: {e}")
@@ -137,7 +130,7 @@ def run_backtest(dataSource, comminfo, global_setting, param_pool, code, strateg
         action_df=action_df,
         metrics=metrics,
         analyzer_results=analyzer_results,
-        out_dir=PLOT_OUT,
+        out_dir=PLOT_DIR,
         code=code,
         strategy_name=strategy_id,
         start_date=str(global_setting.get("start_date", "")),
@@ -168,9 +161,10 @@ def main():
     )
     parser.add_argument(
         "--strategy",
-        default=DEFAULT_STRATEGY,
+        default=None,
         choices=list(STRATEGY_MAPPING.keys()),
-        help=f"Strategy id to backtest (default: {DEFAULT_STRATEGY})",
+        help="Strategy id to backtest for every stock. Default: auto-route per stock "
+        "(regime label from output/stock_filter.csv -> matching strategy).",
     )
     parser.add_argument(
         "--stock-list",
@@ -186,21 +180,23 @@ def main():
     # Load config and build runtime dependencies
     ds = DataSource()
     cfg = ds.cfg
-    global_setting = cfg["global_setting"]
     stock_list = cfg["stock_list"]
     if args.stock_list:
         wanted = {c.strip() for c in args.stock_list.split(",") if c.strip()}
         stock_list = [s for s in stock_list if s["code"] in wanted]
-    valid_codes = [item["code"] for item in stock_list]
+    # Config blacklist overrides the whitelist stock_list
+    blacklist = {str(c) for c in (cfg.get("stock_blacklist") or [])}
+    if blacklist:
+        stock_list = [s for s in stock_list if str(s["code"]) not in blacklist]
     # Normalize keys to str (unquoted numeric codes in yaml are parsed as int)
     param_pool = {str(code): p for code, p in cfg["strategy_params"].items()}
 
-    comm_cfg = cfg["commission_config"]
-    comminfo = AStockCommission(
-        commission=comm_cfg["commission"],
-        stamp_duty=comm_cfg["stamp_duty"],
-        transfer_fee=comm_cfg["transfer_fee"],
-    )
+    comminfo = build_commission(cfg)
+
+    # Per-stock regime -> strategy routing table (written by stock_filter.py)
+    from stock_filter import load_regime_map, strategy_for_code
+
+    regime_map = load_regime_map()
 
     # Sanity-check manual trade records against the full configured pool rather
     # than the --stock-list filtered runtime set (non-fatal warning only)
@@ -213,14 +209,15 @@ def main():
     metric_rows = []
     for stock_info in stock_list:
         code, name = stock_info["code"], stock_info["name"]
-        logger.info(f"==== Backtesting {name}({code}) ====")
+        strategy_id = args.strategy or strategy_for_code(code, regime_map, param_pool, DEFAULT_STRATEGY)
+        logger.info(f"==== Backtesting {name}({code}) strategy={strategy_id} ====")
         metrics = run_backtest(
             ds,
             comminfo,
-            global_setting,
+            cfg,
             param_pool,
             code,
-            args.strategy,
+            strategy_id,
             args.force_refresh,
             stock_name=name,
         )

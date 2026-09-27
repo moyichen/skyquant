@@ -7,31 +7,27 @@ Outputs: output/daily_signal_{YYYYMMDD}.csv + console summary.
 import argparse
 import datetime
 import logging
-import sys
 from pathlib import Path
 
 import backtrader as bt
 import pandas as pd
 
-from comm import AStockCommission
+from comm import (
+    AStockCommission,
+    OUTPUT_DIR,
+    PROJECT_ROOT,
+    apply_broker_settings,
+    build_commission,
+    setup_logging,
+)
 from data_source import AStockData, DataSource
 from strategy import DEFAULT_STRATEGY_PARAMS, STRATEGY_MAPPING, filter_active_strategies
 
-BASE_DIR = Path(__file__).parent.resolve()
-OUTPUT_DIR = BASE_DIR / "output"
-TRADE_CSV = BASE_DIR / "manual_trades.csv"
+TRADE_CSV = PROJECT_ROOT / "manual_trades.csv"
 
 logger = logging.getLogger(__name__)
 
 CONSENSUS_PRIORITY = {"SELL": 3, "BUY": 2, "HOLD": 1, "WAIT": 0}
-
-
-def setup_logging():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        stream=sys.stdout,
-    )
 
 
 def compute_holdings(trade_csv: Path) -> dict[str, dict]:
@@ -93,8 +89,7 @@ def run_strategy_actions(
         volume="volume",
     )
     cerebro.adddata(feed)
-    cerebro.broker.setcash(cfg["global_setting"]["initial_capital"])
-    cerebro.broker.addcommissioninfo(comminfo)
+    apply_broker_settings(cerebro.broker, cfg, float(cfg["global_setting"]["initial_capital"]), comminfo)
     strategy_instance = cerebro.run()[0]
     return strategy_instance.get_action_dataframe()
 
@@ -308,21 +303,38 @@ def main():
     if args.stock_list:
         wanted = {c.strip() for c in args.stock_list.split(",") if c.strip()}
         stock_list = [s for s in stock_list if str(s["code"]) in wanted]
+    # Config blacklist overrides the whitelist stock_list
+    blacklist = {str(c) for c in (cfg.get("stock_blacklist") or [])}
+    if blacklist:
+        stock_list = [s for s in stock_list if str(s["code"]) not in blacklist]
 
-    comm_cfg = cfg["commission_config"]
-    comminfo = AStockCommission(
-        commission=comm_cfg["commission"],
-        stamp_duty=comm_cfg["stamp_duty"],
-        transfer_fee=comm_cfg["transfer_fee"],
-    )
+    comminfo = build_commission(cfg)
 
     # Build param pool: use optimized params when available, otherwise fall back to
     # defaults; paused strategies are dropped via the active-strategy filter.
     optimized_params = {str(code): p for code, p in cfg["strategy_params"].items()}
+    # Regime routing table written by stock_filter.py; absent report -> no narrowing
+    from stock_filter import FILTER_CSV, load_regime_map, routed_strategies
+
+    regime_map = load_regime_map()
+    basic_pass: dict[str, bool] = {}
+    if Path(FILTER_CSV).exists():
+        filter_df = pd.read_csv(FILTER_CSV, dtype={"stock_code": str})
+        basic_pass = dict(zip(filter_df["stock_code"], filter_df["basic_passed"].astype(bool)))
+
     param_pool = {}
+    routed_stock_list = []
     for s in stock_list:
         code = str(s["code"])
-        param_pool[code] = filter_active_strategies(optimized_params.get(code, DEFAULT_STRATEGY_PARAMS))
+        # Symbols failing the basic quality gate (suspended/illiquid/ST) are skipped
+        if not basic_pass.get(code, True):
+            logger.info(f"Skip {code}: rejected by stock_filter basic gate")
+            continue
+        active_params = filter_active_strategies(optimized_params.get(code, DEFAULT_STRATEGY_PARAMS))
+        routed_ids = routed_strategies(code, regime_map, list(active_params.keys()))
+        param_pool[code] = {sid: p for sid, p in active_params.items() if sid in routed_ids}
+        routed_stock_list.append(s)
+    stock_list = routed_stock_list
     stock_name_map = {str(s["code"]): s.get("name", s["code"]) for s in stock_list}
 
     holdings = compute_holdings(TRADE_CSV)

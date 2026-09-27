@@ -4,6 +4,7 @@ import argparse
 
 import pandas as pd
 from common import (
+    COMBO_METRIC_COLS,
     OUT_SAMPLE_CSV,
     PARAM_GRID_CSV,
     BacktestRunner,
@@ -15,7 +16,7 @@ from common import (
 )
 
 # Non-strategy-parameter columns in the grid result CSV
-NON_PARAM_COLS = ["stock_code", "strategy", "final_capital", "profit", "profit_rate"]
+NON_PARAM_COLS = ["stock_code", "strategy"] + COMBO_METRIC_COLS
 # Minimum bars required in train/test slices (must exceed largest indicator minperiod,
 # e.g. SMA60 -> minperiod 60; backtrader's vectorized mode crashes on shorter slices)
 MIN_TRAIN_BARS = 60
@@ -100,9 +101,9 @@ def main():
         jobs = [(row["strategy"], extract_params(row, NON_PARAM_COLS)) for _, row in group.iterrows()]
         print(f"Symbol {code}: out-of-sample verify {len(jobs)} combos on {maxcpu} workers")
         pairs = runner.run_train_test_batch(df_train, df_test, jobs, maxcpu=maxcpu)
-        for (strategy_id, param), (train_final, test_final) in zip(jobs, pairs):
-            train_rate = runner.profit_rate(train_final)
-            test_rate = runner.profit_rate(test_final)
+        for (strategy_id, param), (train_result, test_result) in zip(jobs, pairs):
+            train_rate = runner.profit_rate(train_result)
+            test_rate = runner.profit_rate(test_result)
             overfit_flag = 1 if (train_rate - test_rate) > overfit_threshold else 0
             verify_result.append(
                 {

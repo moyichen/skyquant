@@ -17,7 +17,9 @@ import pandas as pd
 
 from comm import AStockCommission
 from data_source import AStockData, DataSource
-from strategy import STRATEGY_MAPPING
+from report import calc_equity_metrics
+from stock_filter import FILTER_CSV, load_regime_map, routed_strategies  # noqa: F401  (re-exported for stage scripts)
+from strategy import ACTIVE_STRATEGIES, STRATEGY_MAPPING  # noqa: F401  (ACTIVE_STRATEGIES re-exported)
 
 # ===================== Pipeline stage file paths (absolute paths, not dependent on cwd) =====================
 OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
@@ -32,6 +34,34 @@ CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.yaml")
 # must be triggered explicitly with --all-stocks. tests/regression reuses this list.
 REGRESSION_STOCKS = ["000725"]
 
+# ===================== Optimization objective schema =====================
+# Metric columns produced by the grid worker for every parameter combination.
+COMBO_METRIC_COLS = ["final_capital", "profit", "profit_rate", "sharpe_ratio", "max_drawdown", "calmar_ratio"]
+# Per-combo columns produced by the rolling-window stage.
+ROLLING_METRIC_COLS = ["avg_test_profit", "avg_test_sharpe", "avg_test_calmar", "avg_test_drawdown", "valid"]
+# optimize_metric (config opt_pipeline) -> rolling CSV column used by aggregate
+# to rank candidates. Profitability gate (avg_test_profit > 0) always applies.
+OPTIMIZE_OBJECTIVE_COLUMN = {
+    "profit_rate": "avg_test_profit",
+    "sharpe": "avg_test_sharpe",
+    "calmar": "avg_test_calmar",
+}
+# Same objective -> grid-stage CSV column (full-period metrics per combination)
+GRID_OBJECTIVE_COLUMN = {
+    "profit_rate": "profit_rate",
+    "sharpe": "sharpe_ratio",
+    "calmar": "calmar_ratio",
+}
+DEFAULT_OPTIMIZE_METRIC = "profit_rate"
+
+
+def resolve_optimize_metric(cfg) -> str:
+    """Read and validate opt_pipeline.optimize_metric from config."""
+    metric = str((cfg or {}).get("opt_pipeline", {}).get("optimize_metric", DEFAULT_OPTIMIZE_METRIC))
+    if metric not in OPTIMIZE_OBJECTIVE_COLUMN:
+        raise ValueError(f"Unknown optimize_metric '{metric}', choose from {list(OPTIMIZE_OBJECTIVE_COLUMN)}")
+    return metric
+
 
 def parse_code_list(raw: str) -> list:
     """Parse a comma-separated --stock-list value into a list of code strings."""
@@ -43,7 +73,8 @@ def resolve_target_codes(args, cfg) -> list:
 
     Priority: --stock-list (explicit subset) > --all-stocks (full config pool,
     manual trigger) > REGRESSION_STOCKS (fast iteration default). Unknown codes
-    are rejected so a typo never silently optimizes an empty set.
+    are rejected so a typo never silently optimizes an empty set. The config
+    stock_blacklist is applied last regardless of the resolution path.
     """
     pool_codes = [str(item["code"]) for item in cfg["stock_list"]]
     stock_list_arg = getattr(args, "stock_list", None)
@@ -59,7 +90,8 @@ def resolve_target_codes(args, cfg) -> list:
     unknown = [c for c in codes if c not in pool_codes]
     if unknown:
         raise ValueError(f"Stock codes not in config.yaml stock_list: {unknown}")
-    return codes
+    blacklist = {str(c) for c in (cfg.get("stock_blacklist") or [])}
+    return [c for c in codes if c not in blacklist]
 
 
 def write_stage_csv(path: str, df: pd.DataFrame, touched_codes=None) -> None:
@@ -85,16 +117,6 @@ def write_stage_csv(path: str, df: pd.DataFrame, touched_codes=None) -> None:
     merged.to_csv(path, index=False, encoding="utf8")
 
 
-class FinalValueAnalyzer(bt.Analyzer):
-    """Capture final portfolio value for optimization mode."""
-
-    def stop(self):
-        self.final_value = self.strategy.broker.getvalue()
-
-    def get_analysis(self):
-        return self.final_value
-
-
 def resolve_maxcpu(requested):
     """Resolve the worker count for a pipeline stage: positive value as-is,
     0/None/-1 -> all logical CPUs."""
@@ -107,6 +129,10 @@ def _run_single_combo(task):
     """Primitive backtest worker: build a fresh Cerebro inside the child process
     and run one parameter combination on one market-data slice.
 
+    Returns a plain metrics dict {final_value, profit_rate, sharpe_ratio,
+    max_drawdown, calmar_ratio}; a dict is used instead of a bare final value so
+    the grid can rank by sharpe/calmar objectives, not total return only.
+
     Must be a module-level (picklable) function for spawn-based multiprocessing.
     All inputs are plain picklable objects, so the Cerebro itself is never sent
     across processes -- this replaces cerebro.optstrategy, which stores lazy
@@ -118,10 +144,27 @@ def _run_single_combo(task):
     cerebro.addstrategy(STRATEGY_MAPPING[strategy_id], **params)
     cerebro.adddata(AStockData(dataname=df, datetime="datetime"))
     cerebro.broker.setcash(initial_capital)
-    cerebro.broker.addcommissioninfo(AStockCommission(**comm_config))
-    cerebro.addanalyzer(FinalValueAnalyzer, _name="final_value")
+    cerebro.broker.addcommissioninfo(
+        AStockCommission(
+            commission=comm_config["commission"],
+            stamp_duty=comm_config["stamp_duty"],
+            transfer_fee=comm_config["transfer_fee"],
+        )
+    )
+    slippage_perc = float(comm_config.get("slippage_perc", 0.0) or 0.0)
+    if slippage_perc > 0:
+        cerebro.broker.set_slippage_perc(perc=slippage_perc)
     strategy_instance = cerebro.run()[0]
-    return strategy_instance.analyzers.final_value.get_analysis()
+
+    final_value = float(cerebro.broker.getvalue())
+    equity_metrics = calc_equity_metrics(strategy_instance.get_equity_dataframe())
+    return {
+        "final_value": final_value,
+        "profit_rate": (final_value - initial_capital) / initial_capital,
+        "sharpe_ratio": equity_metrics["sharpe_ratio"],
+        "max_drawdown": equity_metrics["max_drawdown"],
+        "calmar_ratio": equity_metrics["calmar_ratio"],
+    }
 
 
 # ===================== Pool workers (module-level; spawn-safe) =====================
@@ -161,9 +204,9 @@ def _worker_run_combo(job):
 def _worker_run_train_test(job):
     strategy_id, params = job
     common = (strategy_id, params, _WORKER_STATE["initial_capital"], _WORKER_STATE["comm_config"])
-    train_final = _run_single_combo((_WORKER_STATE["df_train"],) + common)
-    test_final = _run_single_combo((_WORKER_STATE["df_test"],) + common)
-    return train_final, test_final
+    train_result = _run_single_combo((_WORKER_STATE["df_train"],) + common)
+    test_result = _run_single_combo((_WORKER_STATE["df_test"],) + common)
+    return train_result, test_result
 
 
 def _worker_run_rolling(job):
@@ -182,27 +225,27 @@ class BacktestRunner:
         self.initial_capital = cfg["global_setting"]["initial_capital"]
         comm_cfg = cfg["commission_config"]
         # Plain dict so it can be passed to pool workers (AStockCommission is
-        # rebuilt inside the child instead of being pickled)
+        # rebuilt inside the child instead of being pickled). slippage_perc is
+        # carried here as well so workers honor global_setting.slippage_perc.
         self.comm_config = {
             "commission": comm_cfg["commission"],
             "stamp_duty": comm_cfg["stamp_duty"],
             "transfer_fee": comm_cfg["transfer_fee"],
+            "slippage_perc": float(cfg.get("global_setting", {}).get("slippage_perc", 0.0) or 0.0),
         }
-        self.comminfo = AStockCommission(**self.comm_config)
+        self.comminfo = AStockCommission(
+            commission=self.comm_config["commission"],
+            stamp_duty=self.comm_config["stamp_duty"],
+            transfer_fee=self.comm_config["transfer_fee"],
+        )
 
-    def run(self, df: pd.DataFrame, strategy_id: str, params: dict) -> float:
-        """Run a single strategy on the given market data slice and return the final asset value"""
-        cerebro = bt.Cerebro()
-        cerebro.addstrategy(STRATEGY_MAPPING[strategy_id], **params)
-        cerebro.adddata(AStockData(dataname=df, datetime="datetime"))
-        cerebro.broker.setcash(self.initial_capital)
-        cerebro.broker.addcommissioninfo(self.comminfo)
-        cerebro.run()
-        return cerebro.broker.getvalue()
+    def run(self, df: pd.DataFrame, strategy_id: str, params: dict) -> dict:
+        """Run a single strategy on the given market data slice; return metrics dict"""
+        return _run_single_combo((df, strategy_id, params, self.initial_capital, self.comm_config))
 
-    def profit_rate(self, final_value: float) -> float:
-        """Return the profit rate of the final asset value relative to the initial capital"""
-        return (final_value - self.initial_capital) / self.initial_capital
+    def profit_rate(self, result: dict) -> float:
+        """Return the profit rate of a worker result dict (final vs initial capital)"""
+        return result["profit_rate"]
 
     def _map_jobs(self, jobs, initializer, initargs, worker, serial_fn, maxcpu):
         """Dispatch jobs to a Pool when maxcpu>1, otherwise run serially in-process.
@@ -217,9 +260,9 @@ class BacktestRunner:
                 return pool.map(worker, jobs)
         return [serial_fn(job) for job in jobs]
 
-    def optimize(self, df: pd.DataFrame, strategy_id: str, param_grid: dict, maxcpu: int = 1) -> list[tuple[dict, float]]:
+    def optimize(self, df: pd.DataFrame, strategy_id: str, param_grid: dict, maxcpu: int = 1) -> list:
         """Enumerate the parameter grid in the parent and dispatch each combination
-        to a multiprocessing Pool; return list of (param_dict, final_value).
+        to a multiprocessing Pool; return list of (param_dict, metrics_dict).
 
         cerebro.optstrategy is deliberately not used: it attaches lazy
         itertools.product iterators to Cerebro and pickles the Cerebro itself to
@@ -233,7 +276,7 @@ class BacktestRunner:
         keys = list(param_grid.keys())
         param_combos = [dict(zip(keys, combo)) for combo in itertools.product(*param_grid.values())]
         jobs = [(strategy_id, params) for params in param_combos]
-        final_values = self._map_jobs(
+        results = self._map_jobs(
             jobs,
             _init_combo_worker,
             (df, self.initial_capital, self.comm_config),
@@ -241,7 +284,7 @@ class BacktestRunner:
             lambda job: _run_single_combo((df, job[0], job[1], self.initial_capital, self.comm_config)),
             maxcpu,
         )
-        return list(zip(param_combos, final_values))
+        return list(zip(param_combos, results))
 
     def run_train_test_batch(self, df_train, df_test, jobs, maxcpu=1):
         """Run each (strategy_id, params) job twice (train slice, test slice).
@@ -286,7 +329,7 @@ def extract_params(row, exclude_cols) -> dict:
     """
     param_cols = [col for col in row.index if col not in exclude_cols]
     params = {k: v for k, v in row[param_cols].to_dict().items() if pd.notna(v)}
-    return {k: (int(v) if "period" in k else v) for k, v in params.items()}
+    return {k: (int(v) if "period" in k or "bars" in k else v) for k, v in params.items()}
 
 
 def to_native(params: dict) -> dict:

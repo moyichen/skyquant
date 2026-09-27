@@ -140,10 +140,13 @@ def main():
         test_dfs = [test_df for _train_df, test_df in windows]
         jobs = [(row["strategy"], extract_params(row, NON_PARAM_COLS)) for _, row in group.iterrows()]
         print(f"Symbol {code}: rolling verify {len(jobs)} combos x {len(test_dfs)} windows on {maxcpu} workers")
-        windows_finals = runner.run_rolling_batch(test_dfs, jobs, maxcpu=maxcpu)
-        for (strategy_id, param), finals in zip(jobs, windows_finals):
-            test_rate_list = [runner.profit_rate(final_value) for final_value in finals]
-            avg_test = sum(test_rate_list) / len(test_rate_list)
+        windows_results = runner.run_rolling_batch(test_dfs, jobs, maxcpu=maxcpu)
+        for (strategy_id, param), window_results in zip(jobs, windows_results):
+            n_windows = len(window_results)
+            avg_test = sum(r["profit_rate"] for r in window_results) / n_windows
+            avg_sharpe = sum(r["sharpe_ratio"] for r in window_results) / n_windows
+            avg_calmar = sum(r["calmar_ratio"] for r in window_results) / n_windows
+            avg_drawdown = sum(r["max_drawdown"] for r in window_results) / n_windows
             valid = 1 if avg_test > 0 else 0
             result_list.append(
                 {
@@ -151,6 +154,9 @@ def main():
                     "strategy": strategy_id,
                     **param,
                     "avg_test_profit": round(avg_test, 4),
+                    "avg_test_sharpe": round(avg_sharpe, 4),
+                    "avg_test_calmar": round(avg_calmar, 4),
+                    "avg_test_drawdown": round(avg_drawdown, 4),
                     "valid": valid,
                 }
             )
