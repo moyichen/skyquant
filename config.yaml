@@ -7,7 +7,7 @@ stock_blacklist: []
 commission_config:
   commission: 0.00025
   stamp_duty: 0.001
-  transfer_fee: 0.00001
+  transfer_fee: 1.0e-05
 opt_pipeline:
   out_sample_train_end: '2024-12-31'
   out_sample_overfit_threshold: 0.15
@@ -18,18 +18,17 @@ opt_pipeline:
   rolling_min_test_bars: 100
   optimize_metric: profit_rate
 stock_filter:
-  # Pairlist Filters（概念对齐 freqtrade；turnover/liquidity 为 A 股扩展，无 freqtrade 对应内建过滤器）
   pairlist:
-    age_filter:              # AgeFilter：窗口内最少交易日数（指标预热）
+    age_filter:
       min_days_listed: 120
-    price_filter:            # PriceFilter：均价下限（剔除仙股/退市风险价区）
+    price_filter:
       low_price: 1.0
-    volume_filter:           # VolumeFilter：日均成交额流动性下限
-      lookback_days: 0       #   0=全窗口评估；>0 仅看最近 N 个交易日
+    volume_filter:
+      lookback_days: 0
       min_avg_amount_yi: 0.5
-    turnover_filter:         # A 股扩展：日均换手率下限（%）
+    turnover_filter:
       min_avg_turn: 0.2
-    liquidity_filter:        # A 股扩展：零成交占比 / 最长停牌日历日缺口
+    liquidity_filter:
       max_zero_volume_ratio: 0.01
       max_gap_days: 20
   trend:
@@ -53,134 +52,134 @@ stock_list:
 - code: '601606'
   name: 长城军工
   sector: 军工
-  sector_index: '931066.CSI'
+  sector_index: 931066.CSI
   sector_index_name: 军工龙头
 - code: '000001'
   name: 平安银行
   sector: 银行
-  sector_index: '000947.CSI'
+  sector_index: 000947.CSI
   sector_index_name: 内地银行
 - code: '601166'
   name: 兴业银行
   sector: 银行
-  sector_index: '000947.CSI'
+  sector_index: 000947.CSI
   sector_index_name: 内地银行
 - code: '601138'
   name: 工业富联
   sector: 电子
-  sector_index: '930652.CSI'
+  sector_index: 930652.CSI
   sector_index_name: CS电子
 - code: '601816'
   name: 京沪高铁
   sector: 高铁
-  sector_index: '930621.CSI'
+  sector_index: 930621.CSI
   sector_index_name: CSSW高铁
 - code: '002475'
   name: 立讯精密
   sector: 电子
-  sector_index: '930652.CSI'
+  sector_index: 930652.CSI
   sector_index_name: CS电子
 - code: '000725'
   name: 京东方A
   sector: 电子
-  sector_index: '930652.CSI'
+  sector_index: 930652.CSI
   sector_index_name: CS电子
   regime: breakout
-- code: '000538'
+- code: 000538
   name: 云南白药
   sector: 医药
-  sector_index: '000808.CSI'
+  sector_index: 000808.CSI
   sector_index_name: 医药生物
 - code: '600309'
   name: 万华化学
   sector: 化工
-  sector_index: '000813.CSI'
+  sector_index: 000813.CSI
   sector_index_name: 细分化工
-- code: '000938'
+- code: 000938
   name: 紫光股份
   sector: 计算机
-  sector_index: '930651.CSI'
+  sector_index: 930651.CSI
   sector_index_name: CS计算机
 - code: '600111'
   name: 北方稀土
   sector: 稀土
-  sector_index: '930598.CSI'
+  sector_index: 930598.CSI
   sector_index_name: 稀土产业
 - code: '603173'
   name: 福斯达
   sector: 机械设备
-  sector_index: '000988.CSI'
+  sector_index: 000988.CSI
   sector_index_name: 全指工业
 - code: '002222'
   name: 福晶科技
   sector: 电子
-  sector_index: '930652.CSI'
+  sector_index: 930652.CSI
   sector_index_name: CS电子
 - code: '600809'
   name: 山西汾酒
   sector: 白酒
-  sector_index: '930622.CSI'
+  sector_index: 930622.CSI
   sector_index_name: CSSW白酒
 - code: '002774'
   name: 快意电梯
   sector: 机械设备
-  sector_index: '000988.CSI'
+  sector_index: 000988.CSI
   sector_index_name: 全指工业
 - code: '601127'
   name: 赛力斯
   sector: 汽车
-  sector_index: '930607.CSI'
+  sector_index: 930607.CSI
   sector_index_name: 中证汽车
 - code: '600900'
   name: 长江电力
   sector: 公用事业
-  sector_index: '000995.CSI'
+  sector_index: 000995.CSI
   sector_index_name: 全指公用
-- code: '000792'
+- code: 000792
   name: 盐湖股份
   sector: 化工
-  sector_index: '000813.CSI'
+  sector_index: 000813.CSI
   sector_index_name: 细分化工
 - code: '002230'
   name: 科大讯飞
   sector: 计算机
-  sector_index: '930651.CSI'
+  sector_index: 930651.CSI
   sector_index_name: CS计算机
 - code: '601633'
   name: 长城汽车
   sector: 汽车
-  sector_index: '930607.CSI'
+  sector_index: 930607.CSI
   sector_index_name: 中证汽车
   regime: breakout
 - code: '002466'
   name: 天齐锂业
   sector: 有色
-  sector_index: '930708.CSI'
+  sector_index: 930708.CSI
   sector_index_name: 中证有色
 - code: '000651'
   name: 格力电器
   sector: 家电
-  sector_index: '931021.CSI'
+  sector_index: 931021.CSI
   sector_index_name: 家电龙头
 - code: '601899'
   name: 紫金矿业
   sector: 有色
-  sector_index: '930708.CSI'
+  sector_index: 930708.CSI
   sector_index_name: 中证有色
 - code: '600690'
   name: 海尔智家
   sector: 家电
-  sector_index: '931021.CSI'
+  sector_index: 931021.CSI
   sector_index_name: 家电龙头
-- code: '002594'
+- code: 002594
   name: 比亚迪
   sector: 汽车
-  sector_index: '930607.CSI'
+  sector_index: 930607.CSI
   sector_index_name: 中证汽车
 - code: '600549'
   name: 厦门钨业
   sector: 有色
-  sector_index: '930708.CSI'
+  sector_index: 930708.CSI
   sector_index_name: 中证有色
 strategy_params:
   '000725':
@@ -210,7 +209,7 @@ strategy_params:
       trail_atr_multiple: 1.7
       max_risk_ratio: 0.02
       momentum_period: 20
-  '000538':
+  000538:
     trend:
       trail_atr_multiple: 1.5
       max_risk_ratio: 0.025
@@ -230,12 +229,12 @@ strategy_params:
       trail_atr_multiple: 1.8
       bb_period: 18
       drop_ratio: 0.18
-  '000792':
+  000792:
     trend:
       trail_atr_multiple: 1.5
       max_risk_ratio: 0.02
       momentum_period: 22
-  '000938':
+  000938:
     trend:
       trail_atr_multiple: 1.5
       max_risk_ratio: 0.025

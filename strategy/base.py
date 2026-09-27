@@ -63,6 +63,9 @@ class BaseStrategy(bt.Strategy):
       5. 过拟合：寻优最优参数只保证历史表现，外样本/滚动校验只能缓解不能消除。
     """
 
+    # A股最小交易单位：1 手 = 100 股，所有下单数量必须为 100 的整数倍
+    LOT_SIZE = 100
+
     params = (
         ("atr_period", 14),                        # ATR 计算周期
         ("max_risk_ratio", 0.02),                  # 单笔最大风险占总资金比例
@@ -214,7 +217,9 @@ class BaseStrategy(bt.Strategy):
         if risk_per_share <= 0:
             return 0
         risk_cap = self.broker.getvalue() * self.p.max_risk_ratio
-        return int(risk_cap / risk_per_share)
+        size = int(risk_cap / risk_per_share)
+        # A股最小交易单位 1 手 = 100 股，向下取整到 100 的整数倍
+        return (size // self.LOT_SIZE) * self.LOT_SIZE
 
     def _new_action_row(self, side, price, size, reason):
         """创建一行整合日志（信号触发信息 + 待回填的实际成交信息）"""
@@ -433,6 +438,8 @@ class BaseStrategy(bt.Strategy):
     def _average_down(self, avg_cost):
         """首次亏损达 average_down_drop 时摊低加仓：按当前持仓 × average_down_ratio 挂次日限价单"""
         add_size = int(self.position.size * self.p.average_down_ratio)
+        # A股最小交易单位 1 手 = 100 股，向下取整到 100 的整数倍
+        add_size = (add_size // self.LOT_SIZE) * self.LOT_SIZE
         if add_size <= 0:
             return
         next_session = self._next_session_date()
