@@ -19,7 +19,7 @@ SkyQuant 是一套 A 股日线量化策略回测流水线，支持全自动参�
 | 5. 回测引擎层 | main.py | 封装 Cerebro：数据/手续费/滑点/Analyzer，默认按 regime 自动路由策略，遍历标的收集结果 |
 | 6. 指标报表层 | report.py | calc_metrics 指标计算 + 自包含 HTML 报告（Strategy Summary 展示 regime/板块，「板块指数」区块：最新点位/窗口涨跌/近20日/相对强弱）+ Plotly freqtrade 风格 K 线交互图（板块指数收盘线副轴叠加）；统一输出标准 |
 | 7. 参数寻优层 | opt_pipeline/*.py | 网格→外样本→滚动→聚合→写配置；多指标 dict 贯穿 worker/CSV，回测与寻优复用同一套策略代码 |
-| 8. 一键入口 | run_all.py | 数据→筛选→按标的寻优闭环→批量回测→复盘；统一日志 output/run.log |
+| 8. 一键入口 | skyquant.py | 数据→筛选→按标的寻优闭环→批量回测→复盘；统一日志 output/run.log |
 | 9. 公共工具层 | comm.py | 手续费、路径常量单一来源、setup_logging、apply_blacklist、build_commission、apply_broker_settings |
 
 关键原则：标的前置过滤 > 策略内过滤；策略纯插件化；参数全部外置；统一输出标准（任何策略指标/报表格式一致，可横向对比）。
@@ -51,12 +51,12 @@ SkyQuant 是一套 A 股日线量化策略回测流水线，支持全自动参�
 
 ```bash
 # 寻优流水线（默认只跑回归标的：行情拉取→股票池前置筛选→按标的循环 寻优→校验→聚合→写配置→最后批量回测→复盘）
-python run_all.py
-python run_all.py --all-stocks         # 手动触发全量标的池
-python run_all.py --skip-data          # 缓存加速模式
-python run_all.py --stock-list 000725,600519   # 仅运行指定股票（逗号分隔）
-python run_all.py --screen             # Pairlist Filters 质量门之上再加趋势门，只对 pairlist+trend 双通过的标的跑流水线
-python run_all.py --all-stocks --screen  # 全量标的池 + 趋势性前置过滤
+python3 skyquant.py all
+python3 skyquant.py all --all-stocks         # 手动触发全量标的池
+python3 skyquant.py all --skip-data          # 缓存加速模式
+python3 skyquant.py all --stock-list 000725,600519   # 仅运行指定股票（逗号分隔）
+python3 skyquant.py all --screen             # Pairlist Filters 质量门之上再加趋势门，只对 pairlist+trend 双通过的标的跑流水线
+python3 skyquant.py all --all-stocks --screen  # 全量标的池 + 趋势性前置过滤
 
 # 单独跑股票池前置筛选（只读本地缓存，输出 output/stock_filter.csv）
 python stock_filter.py
@@ -74,15 +74,15 @@ python main.py --stock-list 000725 --strategy trend  # 仅回测指定股票
 
 ### 标的集合与 `--stock-list` 参数说明
 
-**默认标的集合**：`run_all.py` 与 `param_optimize.py` 默认只处理回归标的集 `REGRESSION_STOCKS`（当前仅 `["000725"]`，定义在 `opt_pipeline/common.py`，与 tests/regression 共用同一常量）——每次修改参数后的快速迭代门槛。全量标的池需显式 `--all-stocks` 手动触发。`main.py` 默认用 config.yaml 全部标的；`live_trading.py` 默认取 live_trades.csv 中的全部真实成交/持仓。
+**默认标的集合**：`skyquant.py all` 与 `param_optimize.py` 默认只处理回归标的集 `REGRESSION_STOCKS`（当前仅 `["000725"]`，定义在 `opt_pipeline/common.py`，与 tests/regression 共用同一常量）——每次修改参数后的快速迭代门槛。全量标的池需显式 `--all-stocks` 手动触发。`main.py` 默认用 config.yaml 全部标的；`live_trading.py` 默认取 live_trades.csv 中的全部真实成交/持仓。
 
 `--stock-list` 参数（逗号分隔的股票代码列表）：
 
-- `run_all.py`/`param_optimize.py`：`--stock-list` > `--all-stocks` > 回归标的集（默认），互相冲突或代码不在 config.yaml `stock_list` 中会直接报错（`common.resolve_target_codes` 统一解析）
+- `skyquant.py all`/`param_optimize.py`：`--stock-list` > `--all-stocks` > 回归标的集（默认），互相冲突或代码不在 config.yaml `stock_list` 中会直接报错（`common.resolve_target_codes` 统一解析）
 - `main.py`：不传时用 config.yaml 全部标的；`live_trading.py`：不传时取 live_trades.csv 全部成交
 - 五个寻优阶段脚本（param_optimize/out_sample/rolling/aggregate/write_config）均支持 `--stock-list`；阶段 CSV 经 `common.write_stage_csv` 按标的合并写——重跑某标的只替换该标的的行，其余标的行保留
-- `run_all.py` 结构：批量拉数据 → **股票池前置筛选（常驻，见 stock_filter.py）** → 按标的循环跑寻优链 5 阶段（单标的闭环后再下一个）→ 最后批量回测 + 实盘复盘/信号（live_trading）
-- `run_all.py --screen`：Pairlist Filters 质量门常驻；加 `--screen` 后在质量门通过者之上再做趋势性门控，只把 pairlist+trend 双通过的标的送入寻优；筛选报告写 `output/stock_filter.csv`（含 regime 标签，驱动策略路由）
+- `skyquant.py all` 结构：批量拉数据 → **股票池前置筛选（常驻，见 stock_filter.py）** → 按标的循环跑寻优链 5 阶段（单标的闭环后再下一个）→ 最后批量回测 + 实盘复盘/信号（live_trading）
+- `skyquant.py all --screen`：Pairlist Filters 质量门常驻；加 `--screen` 后在质量门通过者之上再做趋势性门控，只把 pairlist+trend 双通过的标的送入寻优；筛选报告写 `output/stock_filter.csv`（含 regime 标签，驱动策略路由）
 
 ### stock_filter.py — 股票池前置筛选层（数据层与策略层之间）
 
@@ -90,7 +90,7 @@ python main.py --stock-list 000725 --strategy trend  # 仅回测指定股票
 
 **两层门控 + 一个分类**（阈值全部在 config.yaml `stock_filter`）：
 
-1. **Pairlist Filters 质量门（run_all 常驻；趋势策略也执行）**：概念对齐 freqtrade Pairlist Filters，剔除数据不足/停牌/流动性差/低价/ST 标的
+1. **Pairlist Filters 质量门（skyquant all 常驻；趋势策略也执行）**：概念对齐 freqtrade Pairlist Filters，剔除数据不足/停牌/流动性差/低价/ST 标的
 2. **trend 趋势门（仅 `--screen` 强制）**：趋势性 7 阈值
 3. **regime 分类（常驻，不剔除只贴标签）**：trend / range / breakout，决定该标的路由到哪个策略
 
@@ -122,14 +122,14 @@ trend 指标（config `stock_filter.trend`）：
 
 **用法**：
 - 独立：`python stock_filter.py`（全量）/ `--stock-list 000725,600519`
-- 流水线：`python run_all.py`（Pairlist Filters 常驻）/ `--screen`（pairlist+trend）
+- 流水线：`python3 skyquant.py all`（Pairlist Filters 常驻）/ `--screen`（pairlist+trend）
 - ADX 用 Wilder 平滑手动实现（无外部 ta 库依赖）
 
 ## 文件清单
 
 | 文件 | 职责 |
 |------|------|
-| run_all.py | 全流水线调度入口，日志管理，异常终止（行情→常驻 Pairlist Filters 筛选→按标的寻优 5 阶段→批量回测→实盘复盘/信号；--screen 追加趋势门） |
+| skyquant.py | 全流水线调度入口（`all` 子命令），日志管理，异常终止（行情→常驻 Pairlist Filters 筛选→按标的寻优 5 阶段→批量回测→实盘复盘/信号；--screen 追加趋势门） |
 | stock_filter.py | 股票池前置筛选层：Pairlist Filters 质量门（Age/Price/Volume + turnover/liquidity/name A 股扩展）+ trend 趋势门 + regime 分类（trend/range/breakout 路由），输出 output/stock_filter.csv |
 | main.py | 回测引擎层：加载配置、遍历标的（默认按 regime 自动路由策略）、执行回测、输出指标与图表；隔离 Cerebro 细节 |
 | live_trading.py | 实盘交易模块（`LiveTrading`）：live_trades.csv 真实成交解析持仓/成本/浮盈、成交-信号匹配复盘、现算策略共识与次日操作建议（按 regime 收窄、Pairlist 门、黑名单），输出 live_trade_review.csv + live_signal_*.csv + plots/live_portfolio_report.html |
@@ -284,7 +284,7 @@ def get_action_dataframe() -> pd.DataFrame        # 决策时信号日志（含�
 | `range` | ADX<22 或 效率比<0.035（震荡/低效率） | range |
 | `breakout` | 价格振幅≥0.8 且 ADX≥22（高波动大振幅） | breakout |
 
-**路由消费函数**（stock_filter.py）：`load_regime_map()` 读 CSV→{code: regime}（缺失返回 {}）；`routed_strategies(code, regime_map, active_ids)` 有 regime→[该策略]，无→active 全集（param_optimize / live_trading 用）；`strategy_for_code(code, regime_map, param_pool, default)` 决定单策略（main.py 自动路由：regime→config 已配策略→default）。`write_regime_to_config(filter_df)` 在 stock_filter.py CLI 与 run_all.py 筛选步骤后把 regime 文本级写回 config.yaml `stock_list` 各条目（保留注释，不用 yaml.dump）。
+**路由消费函数**（stock_filter.py）：`load_regime_map()` 读 CSV→{code: regime}（缺失返回 {}）；`routed_strategies(code, regime_map, active_ids)` 有 regime→[该策略]，无→active 全集（param_optimize / live_trading 用）；`strategy_for_code(code, regime_map, param_pool, default)` 决定单策略（main.py 自动路由：regime→config 已配策略→default）。`write_regime_to_config(filter_df)` 在 stock_filter.py CLI 与 skyquant.py all 筛选步骤后把 regime 文本级写回 config.yaml `stock_list` 各条目（保留注释，不用 yaml.dump）。
 
 ### trend 策略详解（趋势跟随 + 动量确认）
 
@@ -482,13 +482,22 @@ strategy_instance = cerebro.run()[0]
 - 同目录生成 `output/plots/{code}_{strategy_id}_interactive.html`（freqtrade 风格 Plotly 交互图：K 线 + 成交量 + ATR + MACD（全策略）+ ADX（trend）+ 板块指数副轴叠加 + **双层标记**——大实心三角=实际成交 fills（entry/exit 盈亏/持仓中），小空心三角=触发信号 signals（含 EXPIRED 未成交，按 side×status 分 trace），图例三组均可点击开关，报表通过相对链接跳转）
 - 报表内容（freqtrade 对齐）：头部（标题格式 `名称 (代码) — Strategy: 策略`，不含板块；区间/初始资金/最终净值/总收益）、**板块指数区块（置于 KPI 卡片之上：最新点位/窗口涨跌/近20日/相对强弱）**、8 张 KPI 卡片（年化/最大回撤/Sharpe/Sortino/Calmar/胜率/盈亏比/交易数）、**Equity Curve & Drawdown（Plotly 暗色双子图，初始资金水平虚线，净值 y 轴紧贴数据，位于 Summary 之上）**、Strategy Summary 表（Market Regime + 期望值、最佳/最差交易、持仓时长、连胜连亏、日度统计、B&H 与 alpha——KPI 卡片已列项不重复）、Exit Reason Stats 表（按平仓类别聚合）、Monthly Returns 月度收益热力表（年×12 月，正负绿红）、Signals & Fills 信号-成交统一表（按信号日倒序，最新在最上；含未平仓 BUY）、Analyzer 字段表（递归 flatten 5 个 analyzer）、K 线图链接；控制台同步打印 freqtrade 风格多行摘要
 
-### run_all.py
+### skyquant.py（统一 CLI）
 
 ```python
 def run_step(name, cwd, cmd)    # subprocess.Popen 执行, 非零退出码->sys.exit(1)
 ```
 
-**命令行参数**：
+**子命令**：
+- `dashboard`：启动本地看板（默认 127.0.0.1:8765，--no-browser 可关自动打开）
+- `backtest`：单次回测（透传 main.py，支持 --stock-list/--strategy/--force-refresh）
+- `opt`：寻优流水线（param_optimize→out_sample→rolling→aggregate→write_config，支持 --stock-list/--all-stocks/--maxcpu）
+- `fetch`：拉取行情（透传 main.py --force_refresh）
+- `filter`：股票池前置筛选（透传 stock_filter.py）
+- `live`：实盘复盘与信号（透传 live_trading.py）
+- `all`：全流水线（数据→筛选→按标的寻优闭环→批量回测→复盘）
+
+**all 子命令参数**：
 - `--skip-data`：跳过行情拉取，使用本地缓存
 - `--stock-list 000725,600519`：仅运行指定股票（显式子集）
 - `--all-stocks`：手动触发 config.yaml 全量标的池；不传任何集合参数时默认回归标的集 `REGRESSION_STOCKS`
@@ -710,7 +719,7 @@ def rolling_slice(df, start_year=2020, train_years=4, test_years=1,
     - **IMPROVED**（仅净值正向、结构指标不变）：人工确认改进成立后才允许 `--update-golden`；
     - **CHANGED**（交易笔数/买卖次数/bars/参数签名变化）或 **DEGRADED**（净值下降）：必须解释或回退，**禁止直接更新 golden 掩盖退化**。
 19. **寻优路径**：改动参数后跑一次 `python opt_pipeline/param_optimize.py --stock-list 000725 --maxcpu 1`（WSL 正常环境可 --maxcpu 2 或 0；TRAE macOS 沙箱必须 `--maxcpu 1`），确认 regime 路由、CSV 新列名与多进程 spawn 路径正常；schema 变更时先删除旧阶段 CSV。
-20. **全流水线**：`python run_all.py --stock-list 000725`（行情→常驻 Pairlist Filters 筛选→该标的寻优 5 阶段闭环→自动路由回测→复盘）全部通过；修改默认行为后另跑一次 `python run_all.py`（默认回归标的集）确认默认目标集解析正确。
+20. **全流水线**：`python3 skyquant.py all --stock-list 000725`（行情→常驻 Pairlist Filters 筛选→该标的寻优 5 阶段闭环→自动路由回测→复盘）全部通过；修改默认行为后另跑一次 `python3 skyquant.py all`（默认回归标的集）确认默认目标集解析正确。
 21. **文档同步**：AGENTS.md（分层架构/参数表/策略表/网格表/本清单）与 spec.md 与代码一致。
 
 ### 回归基线说明（tests/regression/）

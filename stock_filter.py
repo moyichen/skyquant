@@ -5,7 +5,7 @@
 # Pairlist Filters; A-share-specific extensions are marked as such. Three
 # independent responsibilities:
 #
-#   1. Pairlist quality filters (cache-only, always applied by run_all.py):
+#   1. Pairlist quality filters (cache-only, always applied by skyquant.py all):
 #      age_filter      ~ freqtrade AgeFilter     (min_days_listed / data sufficiency)
 #      price_filter    ~ freqtrade PriceFilter   (low_price floor)
 #      volume_filter   ~ freqtrade VolumeFilter  (average traded amount, lookback_days)
@@ -13,7 +13,7 @@
 #      liquidity_filter ~ A-share extension      (zero-volume bars / long suspension gaps)
 #      plus an always-on name rule: ST / *ST / 退 names are rejected
 #      (custom filter; freqtrade has no built-in equivalent).
-#   2. Optional trendability filter (enabled with run_all.py --screen):
+#   2. Optional trendability filter (enabled with skyquant.py all --screen):
 #      ADX / EMA structure metrics, keeps only sustained-trend names for the
 #      trend strategy grid.
 #   3. Regime classification -> strategy routing:
@@ -483,7 +483,7 @@ def main():
         for _, r in pairlist_failed.iterrows():
             print(f"  {r['stock_code']} {r['name']}: {r['pairlist_fail_reason']}")
     if len(trend_failed) > 0:
-        print(f"\nTrend-filter rejected ({len(trend_failed)}, use --screen in run_all.py to exclude):")
+        print(f"\nTrend-filter rejected ({len(trend_failed)}, use --screen in skyquant.py all to exclude):")
         for _, r in trend_failed.iterrows():
             print(f"  {r['stock_code']} {r['name']}: {r['fail_reason']}")
 

@@ -64,7 +64,7 @@ class AStockCommission(bt.CommInfoBase):
 def setup_logging(log_file: Optional[Path] = None, level: int = logging.INFO) -> None:
     """Configure root logging.
 
-    log_file=None -> console only (subprocesses such as main.py; run_all.py
+    log_file=None -> console only (subprocesses such as main.py; skyquant.py
     captures their stdout into its own run.log). Pass LOG_FILE to additionally
     mirror every record to the rotating pipeline log file.
     """

@@ -40,7 +40,7 @@ REGIME_CN = {"trend": "趋势", "range": "震荡", "breakout": "突破",
 
 STOCK_CACHE_DIR = PROJECT_ROOT / "cache" / "stock_cache"
 LIVE_TRADES_CSV = PROJECT_ROOT / "live_trades.csv"
-METRICS_CSV = PROJECT_ROOT / "output" / "metrics_summary.csv"
+EQUITY_DIR = PROJECT_ROOT / "output" / "equity_curve"
 LIVE_REPORT_HTML = PLOT_DIR / "live_portfolio_report.html"
 
 UP_RED = "#F04848"
@@ -48,19 +48,37 @@ DOWN_GREEN = "#0EAE7C"
 
 
 # ===================== 状态采集 =====================
-def _load_metrics() -> dict:
-    """读取 metrics_summary.csv -> {(code, strategy): row_dict}。"""
-    if not METRICS_CSV.exists():
-        return {}
-    df = pd.read_csv(METRICS_CSV, dtype={"stock_code": str})
-    out = {}
-    for _, r in df.iterrows():
-        out[(str(r["stock_code"]), str(r["strategy"]))] = {
-            "total_return": _round(r.get("total_return"), 4),
-            "sharpe": _round(r.get("sharpe_ratio"), 2),
-            "max_drawdown": _round(r.get("max_drawdown"), 4),
+def _metrics_from_equity(code: str, strategy: str) -> dict | None:
+    """从 equity curve CSV 实时计算核心指标（不依赖 metrics_summary.csv 快照）。"""
+    path = EQUITY_DIR / f"{code}_{strategy}_equity.csv"
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_csv(path)
+        if df.empty or len(df) < 2:
+            return None
+        equity = df["equity"]
+        total_return = float(equity.iloc[-1] / equity.iloc[0] - 1)
+
+        daily_ret = equity.pct_change().dropna()
+        # Sharpe (annualized, risk-free 2%)
+        daily_rf = (1 + 0.02) ** (1 / 365) - 1
+        excess = daily_ret - daily_rf
+        sharpe = float((252 ** 0.5) * excess.mean() / excess.std()) if excess.std() != 0 else 0.0
+
+        # Max drawdown
+        cummax = equity.cummax()
+        drawdown = (equity - cummax) / cummax
+        max_dd = float(drawdown.min())
+
+        return {
+            "total_return": round(total_return, 4),
+            "sharpe": round(sharpe, 2),
+            "max_drawdown": round(max_dd, 4),
         }
-    return out
+    except Exception as e:
+        logger.warning(f"dashboard: metrics calc failed for {code}/{strategy}: {e}")
+        return None
 
 
 def _round(v, ndigits):
@@ -94,7 +112,7 @@ def build_state() -> dict:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     stock_list = cfg.get("stock_list", [])
-    metrics = _load_metrics()
+    # metrics 从 equity curve 实时计算，不再读 metrics_summary.csv 快照
 
     # code -> 名称（持仓里的标的可能已被移出 stock_list，仍要能显示名字）
     name_map = {str(s["code"]): s.get("name", "") for s in stock_list}
@@ -119,7 +137,7 @@ def build_state() -> dict:
                 "interactive": has_inter,
                 "mtime": datetime.fromtimestamp(report_file.stat().st_mtime).strftime("%m-%d %H:%M")
                 if has_report else None,
-                "metrics": metrics.get((code, sid)),
+                "metrics": _metrics_from_equity(code, sid),
             }
             strategies[sid] = entry
         sectors.setdefault(sector, []).append({

@@ -20,7 +20,7 @@ SkyQuant 是一套**全自动、可复现、可校验、可迭代**的 A 股日�
 
 一站式完成：行情拉取 → 缓存管理 → 股票池前置筛选（质量门/趋势门/regime 分类路由）→ 网格参数寻优 → 过拟合剔除 → 滚动稳定性校验 → 最优参数聚合 → 自动写入配置 → 策略回测 → 指标计算 → 可视化绘图 → 日志留存 → 实盘成交复盘与次日信号。
 
-系统按层解耦：配置层 config.yaml → 数据层 dataprovider.py → 筛选层 stock_filter.py → 策略插件层 strategy/ → 回测引擎层 main.py → 指标报表层 report.py → 寻优层 opt_pipeline/ → 入口 run_all.py；公共能力（手续费、路径、日志、broker 装配）收敛于 comm.py。策略只负责信号规则，不读文件、不拉数据、不筛选标的、不绘图；新增策略只需新增文件并注册 STRATEGY_MAPPING。
+系统按层解耦：配置层 config.yaml → 数据层 dataprovider.py → 筛选层 stock_filter.py → 策略插件层 strategy/ → 回测引擎层 main.py → 指标报表层 report.py → 寻优层 opt_pipeline/ → 统一 CLI skyquant.py；公共能力（手续费、路径、日志、broker 装配）收敛于 comm.py。策略只负责信号规则，不读文件、不拉数据、不筛选标的、不绘图；新增策略只需新增文件并注册 STRATEGY_MAPPING。
 
 ### 1\.2 核心能力
 
@@ -70,7 +70,7 @@ SkyQuant 是一套**全自动、可复现、可校验、可迭代**的 A 股日�
 
 ```Plain Text
 skyquant/
-├── run_all.py                 # 一键全流水线入口（编排层）
+├── skyquant.py                 # 统一 CLI（dashboard/backtest/opt/fetch/filter/live/all）
 ├── main.py                    # 回测引擎层：Cerebro 封装/标的遍历/regime 自动路由
 ├── live_trading.py            # 实盘交易模块：真实成交复盘 + 次日信号 + HTML 持仓报告
 ├── dataprovider.py            # 数据层（DataProvider）：行情拉取与缓存
@@ -143,13 +143,13 @@ skyquant/
 
 运行模式：
 
-- `python run_all.py` 回归标的集流水线（默认）
+- `python3 skyquant.py all` 回归标的集流水线（默认）
 
-- `python run_all.py --all-stocks` 完整全量流水线（手动触发）
+- `python3 skyquant.py all --all-stocks` 完整全量流水线（手动触发）
 
-- `python run_all.py --skip-data`缓存加速流水线
+- `python3 skyquant.py all --skip-data`缓存加速流水线
 
-实盘复盘与次日信号（也可独立于 run_all.py 每日收盘后单独运行）：
+实盘复盘与次日信号（也可独立于 skyquant.py 每日收盘后单独运行）：
 
 - `python live_trading.py` 每日收盘后运行：解析 live_trades.csv 真实持仓，现算各持仓标的策略信号，输出买卖/持有/观望的次日操作建议与自包含 HTML 实盘持仓报告
 - `python live_trading.py --force-refresh` 强制全量下载行情
@@ -159,11 +159,13 @@ skyquant/
 
 ## 4\. 模块详细规范
 
-### 4\.1 run\_all\.py 全局调度模块
+### 4\.1 skyquant.py 统一 CLI
 
-**唯一职责**：流程调度、日志管理、异常终止。
+**唯一职责**：命令行入口分发、日志管理、异常终止。
 
-**编排顺序**：行情拉取/缓存 → 股票池前置筛选（Pairlist Filters 常驻、--screen 追加 trend、regime 分类）→ 逐标的寻优 5 阶段闭环 → 批量回测（regime 自动路由）→ 实盘成交复盘与次日信号（live_trading）。
+**子命令**：`dashboard`（本地看板）、`backtest`（单次回测）、`opt`（寻优流水线）、`fetch`（拉取行情）、`filter`（前置筛选）、`live`（实盘复盘）、`all`（全流水线调度）。
+
+**all 编排顺序**：行情拉取/缓存 → 股票池前置筛选（Pairlist Filters 常驻、--screen 追加 trend、regime 分类）→ 逐标的寻优 5 阶段闭环 → 批量回测（regime 自动路由）→ 实盘成交复盘与次日信号（live_trading）。
 
 **日志规范**：
 
@@ -219,7 +221,7 @@ skyquant/
   - 常驻名称规则：ST/*ST/退 名称剔除（自定义过滤器，freqtrade 无内建对应）
 - trend 趋势门（仅 --screen）：ADX 均值/强趋势占比/多头排列占比/均线年交叉/Kaufman 效率比/价格振幅/最长多头连涨；阈值 config `stock_filter.trend`
 - regime 分类（常驻）：breakout（振幅≥0.8 且 ADX≥22）> trend（ADX≥22、效率≥0.04、连涨≥150）> range；阈值 config `stock_filter.regime`
-- **regime 写回 config**：筛选后 `write_regime_to_config(filter_df)` 把每只标的 regime 文本级写入 config.yaml `stock_list` 对应条目（regex 块内插入/更新 `regime:` 行，保留注释，禁止 yaml.dump 全量重写）；stock_filter.py CLI 与 run_all.py 筛选步骤均执行
+- **regime 写回 config**：筛选后 `write_regime_to_config(filter_df)` 把每只标的 regime 文本级写入 config.yaml `stock_list` 对应条目（regex 块内插入/更新 `regime:` 行，保留注释，禁止 yaml.dump 全量重写）；stock_filter.py CLI 与 skyquant.py all 筛选步骤均执行
 - 消费接口：`load_regime_map()` / `routed_strategies(code, map, active)` / `strategy_for_code(code, map, pool, default)`；筛选报告缺失时安全降级（不剔除、不路由）
 
 **comm.py（公共工具层）**：路径常量唯一来源（PROJECT_ROOT/CACHE_DIR/STOCK_CACHE_DIR/OUTPUT_DIR/EQUITY_DIR/PLOT_DIR/LOG_FILE/CONFIG_PATH，Path 锚定不依赖 CWD）、`setup_logging`、`apply_blacklist`、`build_commission`、`apply_broker_settings`（setcash + 佣金 + 可选 slippage_perc）；AStockCommission 费率：买入=佣金+过户费，卖出=佣金+过户费+印花税。
@@ -343,7 +345,7 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 ### 4.7 live_trading.py 实盘交易模块
 
-实盘唯一入口（`LiveTrading` 类），每日收盘后运行：以 live_trades.csv 的**真实成交**为准，复盘真实交易与策略信号的一致性，并现算每只持仓标的的次日信号，产出自包含 HTML 实盘持仓报告。run_all.py 流水线收尾也调用本模块（透传完整目标集）。
+实盘唯一入口（`LiveTrading` 类），每日收盘后运行：以 live_trades.csv 的**真实成交**为准，复盘真实交易与策略信号的一致性，并现算每只持仓标的的次日信号，产出自包含 HTML 实盘持仓报告。skyquant.py all 流水线收尾也调用本模块（透传完整目标集）。
 
 **真实成交复盘（成交 VS 信号匹配）**：
 

@@ -85,6 +85,24 @@ stock_list:
   sector_index: 930652.CSI
   sector_index_name: CS电子
   regime: breakout
+- code: '601988'
+  name: 中国银行
+  sector: 银行
+  sector_index: 000947.CSI
+  sector_index_name: 内地银行
+  regime: trend
+- code: '601398'
+  name: 工商银行
+  sector: 银行
+  sector_index: 000947.CSI
+  sector_index_name: 内地银行
+  regime: trend
+- code: '600028'
+  name: 中国石化
+  sector: 能源
+  sector_index: 932077.CSI
+  sector_index_name: 全指能源行业
+  regime: range
 - code: 000538
   name: 云南白药
   sector: 医药
