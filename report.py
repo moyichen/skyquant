@@ -1023,14 +1023,10 @@ def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, t
     )
 
     # ---- Strategy overlay indicators ----
-    overlay_first = [True]  # legend group title only on the first member
-
     def add_overlay(line, name, color, dash="solid", width=1.3):
-        kwargs = dict(legendgroup="indicators", legendgrouptitle_text="指标") if overlay_first[0] else dict(legendgroup="indicators")
-        overlay_first[0] = False
         fig.add_trace(
             go.Scatter(x=x, y=_line_to_numpy(line, n), mode="lines", name=name,
-                       **kwargs,
+                       legendgroup="indicators",
                        line=dict(color=color, width=width, dash=dash)),
             row=1, col=1,
         )
@@ -1051,11 +1047,9 @@ def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, t
         idx = index_df.copy()
         idx["datetime"] = pd.to_datetime(idx["datetime"])
         idx_close = idx.set_index("datetime")["close"].reindex(pd.DatetimeIndex(x)).ffill()
-        kwargs = dict(legendgroup="indicators", legendgrouptitle_text="指标") if overlay_first[0] else dict(legendgroup="indicators")
-        overlay_first[0] = False
         fig.add_trace(
             go.Scatter(x=x, y=idx_close.values, mode="lines", name=index_label or "sector index",
-                       **kwargs,
+                       legendgroup="indicators",
                        line=dict(color="#9AA7B8", width=1.4), opacity=0.85, hovertemplate="%{y:.2f}"),
             row=1, col=1, secondary_y=True,
         )
@@ -1064,16 +1058,14 @@ def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, t
             showgrid=False, title_font=dict(size=11, color="#9AA7B8"), tickfont=dict(color="#9AA7B8"),
         )
 
-    # ---- EMA reference lines for range/breakout (line-shaped, group with 指标) ----
+    # ---- EMA reference lines for range/breakout (line-shaped, indicators group) ----
     # Drawn here so ALL line traces precede ALL point traces in the legend.
     if not (hasattr(strategy, "ema_fast_line") and hasattr(strategy, "ema_slow_line")):
         ema_fast_p, ema_slow_p = 20, 60
         ema_fast_vals_ref = df["close"].ewm(span=ema_fast_p, adjust=False).mean().to_numpy()
         ema_slow_vals_ref = df["close"].ewm(span=ema_slow_p, adjust=False).mean().to_numpy()
-        kwargs = dict(legendgroup="indicators", legendgrouptitle_text="指标") if overlay_first[0] else dict(legendgroup="indicators")
-        overlay_first[0] = False
         fig.add_trace(go.Scatter(x=x, y=ema_fast_vals_ref, mode="lines", name=f"EMA{ema_fast_p} (ref)",
-                                 **kwargs, line=dict(color="#4FC3F7", width=1.0, dash="dot"),
+                                 legendgroup="indicators", line=dict(color="#4FC3F7", width=1.0, dash="dot"),
                                  opacity=0.6), row=1, col=1)
         fig.add_trace(go.Scatter(x=x, y=ema_slow_vals_ref, mode="lines", name=f"EMA{ema_slow_p} (ref)",
                                  legendgroup="indicators", line=dict(color="#F5B041", width=1.0, dash="dot"),
@@ -1133,27 +1125,27 @@ def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, t
     if win_conn_x:
         fig.add_trace(go.Scatter(x=win_conn_x, y=win_conn_y, mode="lines", name="连线·盈",
                                  legendgroup="fills",
-                                 line=dict(color="#57CC99", width=1, dash="dot"), hoverinfo="skip",
+                                 line=dict(color="#EF5350", width=1, dash="dot"), hoverinfo="skip",
                                  opacity=0.55), row=1, col=1)
     if loss_conn_x:
         fig.add_trace(go.Scatter(x=loss_conn_x, y=loss_conn_y, mode="lines", name="连线·亏",
                                  legendgroup="fills",
-                                 line=dict(color="#F38181", width=1, dash="dot"), hoverinfo="skip",
+                                 line=dict(color="#26A69A", width=1, dash="dot"), hoverinfo="skip",
                                  opacity=0.55), row=1, col=1)
     fig.add_trace(go.Scatter(x=entry_x, y=entry_y, text=entry_text, hovertext=entry_text,
                              hoverinfo="text", mode="markers", name="成交买入",
-                             legendgroup="fills", legendgrouptitle_text="成交",
+                             legendgroup="fills",
                              marker=dict(symbol="triangle-up", size=16, color="#29B6F6",
                                          line=dict(color="#FFFFFF", width=1.6))), row=1, col=1)
     fig.add_trace(go.Scatter(x=win_x, y=win_y, text=win_text, hovertext=win_text,
                              hoverinfo="text", mode="markers", name="卖出·盈",
                              legendgroup="fills",
-                             marker=dict(symbol="triangle-down", size=16, color="#26A69A",
-                                         line=dict(color="#FFFFFF", width=1.6))), row=1, col=1)
-    fig.add_trace(go.Scatter(x=loss_x, y=loss_y, hovertext=loss_text, hoverinfo="text",
-                             mode="markers", name="卖出·亏",
-                             legendgroup="fills",
                              marker=dict(symbol="triangle-down", size=16, color="#EF5350",
+                                         line=dict(color="#FFFFFF", width=1.6))), row=1, col=1)
+    fig.add_trace(go.Scatter(x=loss_x, y=loss_y, text=loss_text, hovertext=loss_text,
+                             hoverinfo="text", mode="markers", name="卖出·亏",
+                             legendgroup="fills",
+                             marker=dict(symbol="triangle-down", size=16, color="#26A69A",
                                          line=dict(color="#FFFFFF", width=1.6))), row=1, col=1)
 
     # Open position at the end of the run (freqtrade plots an open-trade marker)
@@ -1170,68 +1162,9 @@ def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, t
             row=1, col=1,
         )
 
-    # ---- Trigger signal markers (from action_log: EVERY signal incl. EXPIRED) ----
-    # Small hollow markers, one trace per side+status so the legend can toggle
-    # each category independently (useful when tuning signal combinations).
-    if action_df is not None and len(action_df):
-        sig_groups = {}  # (side, status) -> dict of lists
-        for _, sig in action_df.iterrows():
-            sig_date = pd.to_datetime(sig["date"]).date()
-            sig_idx = row_by_date.get(sig_date)
-            if sig_idx is None:
-                continue
-            side = str(sig.get("side", ""))
-            status = str(sig.get("status", ""))
-            key = (side, status)
-            g = sig_groups.setdefault(key, {"x": [], "y": [], "text": []})
-            if side == "BUY":
-                g["y"].append(df["low"].iloc[sig_idx] * 0.97)
-            else:
-                g["y"].append(df["high"].iloc[sig_idx] * 1.03)
-            g["x"].append(x.iloc[sig_idx])
-            exec_part = ""
-            if status == "FILLED" and not pd.isna(sig.get("exec_price")):
-                exec_part = f"<br>filled {sig.get('exec_date')} @ {sig['exec_price']:.2f}"
-            g["text"].append(
-                f"SIGNAL {side} [{status}] {sig_date}<br>"
-                f"trigger close {sig['trigger_price']:.2f}  size {int(sig['size'])}{exec_part}<br>"
-                f"{sig.get('reason', '')}"
-            )
-        sig_style = {
-            ("BUY", "FILLED"): dict(symbol="triangle-up-open", color="#29B6F6", label="信号买·成交"),
-            ("BUY", "EXPIRED"): dict(symbol="triangle-up-open", color="#7E8A99", label="信号买·失效"),
-            ("BUY", "PENDING"): dict(symbol="triangle-up-open", color="#B39DDB", label="信号买·待成交"),
-            ("SELL", "FILLED"): dict(symbol="triangle-down-open", color="#FFB74D", label="信号卖·成交"),
-            ("SELL", "EXPIRED"): dict(symbol="triangle-down-open", color="#7E8A99", label="信号卖·失效"),
-            ("SELL", "PENDING"): dict(symbol="triangle-down-open", color="#B39DDB", label="信号卖·待成交"),
-        }
-        for (side, status), g in sig_groups.items():
-            style = sig_style.get((side, status), dict(symbol="circle-open", color="#9AA7B8", label=f"信号{side}·{status.lower()}"))
-            fig.add_trace(
-                go.Scatter(x=g["x"], y=g["y"], hovertext=g["text"], hoverinfo="text",
-                           mode="markers", name=style["label"],
-                           legendgroup="signals", legendgrouptitle_text="触发信号",
-                           marker=dict(symbol=style["symbol"], size=9, color=style["color"],
-                                       line=dict(color=style["color"], width=1.2)),
-                           opacity=0.75),
-                row=1, col=1,
-            )
-
-    # ---- Technical cross signals: EMA golden/death cross + MACD golden/death ----
-    # Display-only overlays (never fed back into strategy logic). Each category
-    # is an independent trace in legendgroup "tech" so users can toggle them
-    # individually when analyzing signal combinations.
-    if hasattr(strategy, "ema_fast_line") and hasattr(strategy, "ema_slow_line"):
-        ema_fast_vals = _line_to_numpy(strategy.ema_fast_line, n)
-        ema_slow_vals = _line_to_numpy(strategy.ema_slow_line, n)
-        ema_fast_p, ema_slow_p = strategy.p.ema_fast, strategy.p.ema_slow
-    else:
-        # range/breakout don't own EMAs: values come from the 20/60 reference
-        # lines already drawn above in the 指标 group.
-        ema_fast_p, ema_slow_p = 20, 60
-        ema_fast_vals = df["close"].ewm(span=ema_fast_p, adjust=False).mean().to_numpy()
-        ema_slow_vals = df["close"].ewm(span=ema_slow_p, adjust=False).mean().to_numpy()
-
+    # ---- Technical cross signals: MACD golden/death cross on the price chart ----
+    # Display-only overlays (never fed back into strategy logic). EMA crosses are
+    # intentionally NOT marked: the EMA lines themselves already show alignment.
     def _cross_indices(fast_vals, slow_vals):
         """(golden_cross_idx, death_cross_idx): fast crosses above/below slow."""
         f = np.asarray(fast_vals, dtype=float)
@@ -1242,37 +1175,21 @@ def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, t
         death = np.where(above[:-1] & ~above[1:])[0] + 1
         return golden, death
 
-    ema_golden, ema_death = _cross_indices(ema_fast_vals, ema_slow_vals)
-    fig.add_trace(go.Scatter(x=x.iloc[ema_golden], y=df["low"].iloc[ema_golden] * 0.99,
-                             mode="markers", name=f"EMA金叉·多头",
-                             legendgroup="tech", legendgrouptitle_text="技术交叉",
-                             hovertext=[f"EMA GOLDEN CROSS {d.date()}<br>→ 多头排列 (EMA{ema_fast_p} 上穿 EMA{ema_slow_p})" for d in x.iloc[ema_golden]],
-                             hoverinfo="text",
-                             marker=dict(symbol="diamond", size=10, color="#00E5A0",
-                                         line=dict(color="#FFFFFF", width=0.8))), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x.iloc[ema_death], y=df["high"].iloc[ema_death] * 1.01,
-                             mode="markers", name=f"EMA死叉·空头",
-                             legendgroup="tech",
-                             hovertext=[f"EMA DEATH CROSS {d.date()}<br>→ 空头排列 (EMA{ema_fast_p} 下穿 EMA{ema_slow_p})" for d in x.iloc[ema_death]],
-                             hoverinfo="text",
-                             marker=dict(symbol="diamond", size=10, color="#FF8A65",
-                                         line=dict(color="#FFFFFF", width=0.8))), row=1, col=1)
-
     macd_golden, macd_death = _cross_indices(macd_vals, macdsignal_vals)
-    fig.add_trace(go.Scatter(x=x.iloc[macd_golden], y=macd_vals[macd_golden],
+    fig.add_trace(go.Scatter(x=x.iloc[macd_golden], y=df["low"].iloc[macd_golden] * 0.99,
                              mode="markers", name="MACD金叉",
                              legendgroup="tech",
                              hovertext=[f"MACD GOLDEN CROSS {d.date()}<br>DIF 上穿 DEA" for d in x.iloc[macd_golden]],
                              hoverinfo="text",
-                             marker=dict(symbol="circle", size=7, color="#00E5A0",
-                                         line=dict(color="#FFFFFF", width=0.6))), row=row_of["macd"], col=1)
-    fig.add_trace(go.Scatter(x=x.iloc[macd_death], y=macd_vals[macd_death],
+                             marker=dict(symbol="circle", size=8, color="#EF5350",
+                                         line=dict(color="#FFFFFF", width=0.6))), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x.iloc[macd_death], y=df["high"].iloc[macd_death] * 1.01,
                              mode="markers", name="MACD死叉",
                              legendgroup="tech",
                              hovertext=[f"MACD DEATH CROSS {d.date()}<br>DIF 下穿 DEA" for d in x.iloc[macd_death]],
                              hoverinfo="text",
-                             marker=dict(symbol="x", size=7, color="#FF8A65",
-                                         line=dict(color="#FF8A65", width=1.2))), row=row_of["macd"], col=1)
+                             marker=dict(symbol="x", size=8, color="#26A69A",
+                                         line=dict(color="#26A69A", width=1.2))), row=1, col=1)
 
     # ---- Volume ----
     vol_colors = np.where(df["close"] >= df["open"], up_color, down_color)
