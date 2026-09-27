@@ -20,7 +20,7 @@ SkyQuant 是一套**全自动、可复现、可校验、可迭代**的 A 股日�
 
 一站式完成：行情拉取 → 缓存管理 → 股票池前置筛选（质量门/趋势门/regime 分类路由）→ 网格参数寻优 → 过拟合剔除 → 滚动稳定性校验 → 最优参数聚合 → 自动写入配置 → 策略回测 → 指标计算 → 可视化绘图 → 日志留存 → 手工交易复盘。
 
-系统按层解耦：配置层 config.yaml → 数据层 data_source.py → 筛选层 stock_filter.py → 策略插件层 strategy/ → 回测引擎层 main.py → 指标报表层 report.py → 寻优层 opt_pipeline/ → 入口 run_all.py；公共能力（手续费、路径、日志、broker 装配）收敛于 comm.py。策略只负责信号规则，不读文件、不拉数据、不筛选标的、不绘图；新增策略只需新增文件并注册 STRATEGY_MAPPING。
+系统按层解耦：配置层 config.yaml → 数据层 dataprovider.py → 筛选层 stock_filter.py → 策略插件层 strategy/ → 回测引擎层 main.py → 指标报表层 report.py → 寻优层 opt_pipeline/ → 入口 run_all.py；公共能力（手续费、路径、日志、broker 装配）收敛于 comm.py。策略只负责信号规则，不读文件、不拉数据、不筛选标的、不绘图；新增策略只需新增文件并注册 STRATEGY_MAPPING。
 
 ### 1\.2 核心能力
 
@@ -28,7 +28,7 @@ SkyQuant 是一套**全自动、可复现、可校验、可迭代**的 A 股日�
 
 - 完整 A 股交易成本模型（佣金、印花税、过户费）+ 可选百分比滑点（config 开关，回测/寻优同口径）
 
-- 股票池前置筛选：basic 质量门（停牌/流动性/低价/ST，常驻）+ trend 趋势门（--screen）+ regime 自动路由（trend/range/breakout）
+- 股票池前置筛选：Pairlist Filters 质量门（AgeFilter/PriceFilter/VolumeFilter + turnover/liquidity A 股扩展 + ST 名称规则，常驻）+ trend 趋势门（--screen）+ regime 自动路由（trend/range/breakout）
 
 - 多策略、多标的网格参数遍历寻优（按 regime 只寻优路由策略；profit_rate/sharpe/calmar 三种优化目标可配）
 
@@ -38,7 +38,7 @@ SkyQuant 是一套**全自动、可复现、可校验、可迭代**的 A 股日�
 
 - 专业量化指标体系：年化收益、最大回撤、夏普比率、卡玛比率、胜率、盈亏比
 
-- 自动可视化：自包含 HTML 回测报表（KPI 卡片、净值-回撤联动图、交易表、Analyzer 字段表）、btplotting K 线交互图
+- 自动可视化：自包含 HTML 回测报表（KPI 卡片、Strategy Summary、净值-回撤联动图、Exit Reason、Monthly Returns、交易表、Analyzer 字段表）、Plotly freqtrade 风格 K 线交互图
 
 - 全局日志系统：控制台 \+ 文件双输出
 
@@ -71,8 +71,8 @@ skyquant/
 ├── run_all.py                 # 一键全流水线入口（编排层）
 ├── main.py                    # 回测引擎层：Cerebro 封装/标的遍历/regime 自动路由
 ├── daily_signal.py            # 每日信号生成
-├── data_source.py             # 数据层：行情拉取与缓存
-├── stock_filter.py            # 股票池前置筛选层：basic 质量门 + trend 趋势门 + regime 分类
+├── dataprovider.py            # 数据层（DataProvider）：行情拉取与缓存
+├── stock_filter.py            # 股票池前置筛选层：Pairlist Filters + trend 趋势门 + regime 分类
 ├── comm.py                    # 公共工具层：手续费/路径常量/日志/broker 装配/黑名单
 ├── report.py                  # 指标与报表层：指标计算 + HTML 报表 + K 线图
 ├── manual_trade_review.py     # 手工交易复盘模块
@@ -82,9 +82,9 @@ skyquant/
 │   └── stock_cache/           # 股票K线缓存CSV
 ├── output/
 │   ├── run.log                # 全流程运行日志（自动生成）
-│   ├── stock_filter.csv       # 前置筛选报告（basic/trend/regime，驱动策略路由）
+│   ├── stock_filter.csv       # 前置筛选报告（pairlist/trend/regime，驱动策略路由）
 │   ├── equity_curve/         # 每标的每日净值序列
-│   ├── plots/                 # 每标的 HTML 回测报表与 btplotting K 线图
+│   ├── plots/                 # 每标的 HTML 回测报表与 Plotly K 线交互图
 │   ├── metrics_summary.csv    # 指标汇总表
 │   ├── param_optimize_result.csv
 │   ├── out_sample_verify_result.csv
@@ -96,7 +96,7 @@ skyquant/
 │   ├── __init__.py
 │   ├── base.py
 │   ├── trend.py            # 趋势策略（合并 trend_follow+momentum）
-│   ├── range.py            # 震荡策略（合并 boll_ma+short_reversal）
+│   ├── range.py            # 震荡策略（合并 boll_ma+short_reversal；bb_*band 指标）
 │   └── breakout.py         # 突破策略（唐奇安通道）
 └── opt_pipeline/
     ├── common.py                # 流水线共享基础设施（多指标 worker/目标解析/路由）
@@ -116,11 +116,11 @@ skyquant/
 1. 全量行情拉取 / 跳过缓存（批量，I/O 密集）
 
 2. 股票池前置筛选（常驻，只读缓存，写 output/stock_filter.csv）：
-   1. basic 质量门：K 线数/零成交量/缺口/成交额/换手率/均价/ST，未过者剔除
+   1. Pairlist Filters 质量门：上市天数/零成交量/缺口/成交额/换手率/均价/ST，未过者剔除
    2. trend 趋势门：仅 `--screen` 时强制（ADX/EMA/效率比等 7 项）
    3. regime 分类：trend/range/breakout 标签（不剔除，驱动策略路由）
 
-3. 对每个通过 basic（--screen 时 basic+trend）的标的依次执行完整寻优链（单标的闭环后再处理下一个标的；按 regime 只寻优路由到的策略）：
+3. 对每个通过 Pairlist Filters（--screen 时 pairlist+trend）的标的依次执行完整寻优链（单标的闭环后再处理下一个标的；按 regime 只寻优路由到的策略）：
    1. 网格参数优化遍历（profit_rate/sharpe/calmar 多指标，按 optimize_metric 排序）
    2. 外样本校验（剔除训练集过拟合）
    3. 滚动窗口稳定性校验（防止偶然收益）
@@ -159,7 +159,7 @@ skyquant/
 
 **唯一职责**：流程调度、日志管理、异常终止。
 
-**编排顺序**：行情拉取/缓存 → 股票池前置筛选（basic 常驻、--screen 追加 trend、regime 分类）→ 逐标的寻优 5 阶段闭环 → 批量回测（regime 自动路由）→ 手工复盘。
+**编排顺序**：行情拉取/缓存 → 股票池前置筛选（Pairlist Filters 常驻、--screen 追加 trend、regime 分类）→ 逐标的寻优 5 阶段闭环 → 批量回测（regime 自动路由）→ 手工复盘。
 
 **日志规范**：
 
@@ -174,8 +174,8 @@ skyquant/
 **统一机制（所有策略共享）**：
 
 - **入场过滤（基类不设方向性门控，各策略自管）**：参考 freqtrade 分层——全局层只负责风控与执行（仓位/止损/摊低/执行模型），方向性过滤属于策略 alpha，标的适配交给 stock_filter 筛选层。trend 策略在 `_trend_filters_ok()` 中自带趋势过滤：
-  1. **均线趋势**：EMA(sma_fast) > EMA(sma_slow)，只做多头排列。
-  2. **MACD 多头**：DIF > 0（零轴上方）且 DIF > DEA（金叉状态），且 DIF 持续上行 `macd_momentum_bars` 根、MACD 柱持续放大（动量增强）。
+  1. **均线趋势**：EMA(ema_fast) > EMA(ema_slow)，只做多头排列。
+  2. **MACD 多头**：macd(DIF) > 0（零轴上方）且 macd > macdsignal（金叉状态），且 DIF 持续上行 `macd_momentum_bars` 根、macdhist 柱持续放大（动量增强）。指标属性命名对齐 freqtrade：macd / macdsignal / macdhist / adx / plus_di / minus_di。
   3. **波动率**：ATR/收盘价 > min_volatility_ratio，过滤横盘假突破。
   4. **ADX 趋势强度**：ADX ≥ adx_min（低于阈值视为横盘震荡直接不开仓，>25 强趋势），且 +DI > −DI（多头方向）。
 - **亏损侧放宽 + 摊低加仓（低价标的适用）**：
@@ -186,8 +186,8 @@ skyquant/
   - 基础追踪：`stop = 持仓以来最高价 - trail_atr_multiple × ATR`，只上不下（ratchet）。
   - 动态止盈：浮盈（最高价 − 入场价）达到 `trail_tighten_profit_multiple × ATR` 后，止损倍数收紧为 `trail_tight_atr_multiple`，锁定利润但不封顶上行，全程跟随趋势吃满波段。
   - 固定止盈 `take_profit_atr_multiple` 默认 None 关闭，仅显式配置时启用（优先级高于追踪止损）。
-- **全局风控保护（对齐 freqtrade Protections，默认全关）**：`cooldown_bars`（卖出后 N bar 冷却）、`stoploss_guard_trade_limit/lookback_bars/pause_bars`（回看窗口内止损达上限即暂停开仓）、`max_drawdown_limit`（净值回撤超阈值期间禁止开仓）；只拦开仓、不拦平仓，仅基于已成交事实，无方向性判断。
-- **策略专属信号止损**：子类 `populate_exit()` 中定义（如动量转负、均线死叉等）。
+- **全局风控保护（对齐 freqtrade Protections，参数名同名/同口径，默认全关）**：`cooldown_period_candles`（CooldownPeriod，卖出后 N 根 K 线冷却）、`stoploss_guard_trade_limit`/`stoploss_guard_lookback_period_candles`/`stoploss_guard_stop_duration_candles`（StoplossGuard，回看窗口内止损达上限即暂停开仓）、`max_allowed_drawdown`（MaxDrawdown，净值回撤超阈值期间禁止开仓）；只拦开仓、不拦平仓，仅基于已成交事实，无方向性判断。
+- **策略专属信号止损**：子类 `populate_exit_trend()` 中定义（如动量转负、均线死叉等）。
 - **统一输出接口**：`get_equity_dataframe()`、`get_trade_dataframe()`、`get_action_dataframe()`。
 
 **策略清单（专属开仓信号 / 专属平仓条件）**：
@@ -195,18 +195,24 @@ skyquant/
 | 策略 | 入场过滤 | 专属开仓信号 | 专属平仓条件（叠加追踪止损） |
 |------|------|----------|------------------------------|
 | trend | 策略专属趋势过滤（EMA/MACD/波动率/ADX） | 过滤通过 **且** Momentum>0 | Momentum < 0 |
-| range | 无 | close ≤ 布林下轨 **或** 跌幅 > drop_ratio | close > 布林上轨 |
-| breakout | 无 | close > 过去 N 日最高价（唐奇安突破） | close < 过去 N 日最低价（跌破下轨） |
+| range | 无 | close ≤ bb_lowerband **或** 跌幅 > drop_ratio | close > bb_upperband |
+| breakout | 无 | close > donchian_upper（唐奇安上轨突破） | close < donchian_lower（跌破下轨） |
 
-> 3 个策略均继承 BaseStrategy，追踪止损、动态止盈、ATR 仓位与日志接口由基类统一提供，子类只需实现 `populate_indicators` / `populate_entry` / `populate_exit` 三个钩子。基类不设方向性入场门控；趋势过滤参数（sma_*/macd_*/min_volatility_ratio/adx_*）为 trend 专属，range/breakout 不持有。每只标的由 `stock_filter.classify_regime` 打 regime 标签（trend/range/breakout），路由到对应策略（param_optimize 经 `routed_strategies`、main.py 经 `strategy_for_code`、daily_signal 经 `routed_strategies` 收窄共识策略集）。
+> 3 个策略均继承 BaseStrategy，追踪止损、动态止盈、ATR 仓位与日志接口由基类统一提供，子类只需实现 `populate_indicators` / `populate_entry_trend` / `populate_exit_trend` 三个钩子（命名对齐 freqtrade）。基类不设方向性入场门控；趋势过滤参数（ema_*/macd_*/min_volatility_ratio/adx_*）为 trend 专属，range/breakout 不持有。每只标的由 `stock_filter.classify_regime` 打 regime 标签（trend/range/breakout），路由到对应策略（param_optimize 经 `routed_strategies`、main.py 经 `strategy_for_code`、daily_signal 经 `routed_strategies` 收窄共识策略集）。
 
 ### 4.2 数据层 / 筛选层 / 公共工具层
 
-**data_source.py（数据层）**：只负责 Tushare 拉取、增量更新、CSV 缓存、字段标准化（`datetime/open/high/low/close/volume/preclose/amount/turn/pctChg`，前复权），不含任何交易逻辑；AStockData 继承 bt.feeds.PandasData。
+**dataprovider.py（数据层，`DataProvider` 类）**：只负责 Tushare 拉取、增量更新、CSV 缓存、字段标准化（`datetime/open/high/low/close/volume/preclose/amount/turn/pctChg`，前复权），不含任何交易逻辑；AStockData 继承 bt.feeds.PandasData。
 
 **stock_filter.py（股票池前置筛选层）**：只读本地缓存，输出 `output/stock_filter.csv`。
 
-- basic 质量门（常驻）：min_bars / max_zero_volume_ratio / max_gap_days / min_avg_amount_yi / min_avg_turn / min_mean_close + ST/退市名称剔除；阈值 config `stock_filter.basic`
+- Pairlist Filters 质量门（常驻，概念对齐 freqtrade；阈值 config `stock_filter.pairlist`）：
+  - `age_filter.min_days_listed`（AgeFilter，窗口内交易日数下限）
+  - `price_filter.low_price`（PriceFilter，均价下限）
+  - `volume_filter.lookback_days` / `volume_filter.min_avg_amount_yi`（VolumeFilter，0=全窗口；日均成交额，亿元）
+  - `turnover_filter.min_avg_turn`（A 股扩展：日均换手率）
+  - `liquidity_filter.max_zero_volume_ratio` / `max_gap_days`（A 股扩展：零成交占比 / 最长停牌缺口）
+  - 常驻名称规则：ST/*ST/退 名称剔除（自定义过滤器，freqtrade 无内建对应）
 - trend 趋势门（仅 --screen）：ADX 均值/强趋势占比/多头排列占比/均线年交叉/Kaufman 效率比/价格振幅/最长多头连涨；阈值 config `stock_filter.trend`
 - regime 分类（常驻）：breakout（振幅≥0.8 且 ADX≥22）> trend（ADX≥22、效率≥0.04、连涨≥150）> range；阈值 config `stock_filter.regime`
 - 消费接口：`load_regime_map()` / `routed_strategies(code, map, active)` / `strategy_for_code(code, map, pool, default)`；筛选报告缺失时安全降级（不剔除、不路由）
@@ -256,9 +262,16 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 |卡玛比率|年化收益 / abs(最大回撤)|
 |胜率|盈利交易数 / 总交易数|
 |盈亏比|总盈利金额 / 总亏损金额|
+|Sortino|sqrt(252)×日均收益 / 负收益日标准差（仅下行波动）|
+|期望值/比率|win_rate×均盈 − loss_rate×均亏；比率 = 期望值/均亏（freqtrade 口径）|
+|最佳/最差交易|单笔净盈亏极值|
+|持仓时长|入场→平仓日历日均值（全/盈/亏分组）|
+|连胜/连亏|按平仓顺序的最长连续盈利/亏损笔数|
+|日度统计|best/worst_day、盈利/亏损/平盘交易日数|
+|market change / alpha|Buy & Hold 收益（需传入收盘价序列）；alpha = 策略总收益 − B&H|
 |总交易次数|全部平仓交易统计|
 
-`calc_equity_metrics(equity_df)` 只依赖净值曲线（寻优 worker 用）；`calc_metrics(equity_df, trades_df)` 追加交易类指标（main.py 报表用）。回测与寻优指标同源同口径。
+`calc_equity_metrics(equity_df)` 只依赖净值曲线（寻优 worker 用）；`calc_metrics(equity_df, trades_df, price_series=None)` 追加交易类/日度/B&H 基准指标（main.py 报表用）。回测与寻优指标同源同口径。`summarize_exit_reasons(trades_df)` 将原始 exit_reason 归一为 stop_loss/trailing_stop/take_profit/exit_signal 四类并聚合（freqtrade EXIT REASON STATS）。
 
 ### 4.5 report\.py 可视化规范
 
@@ -266,14 +279,21 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 1. `{code}_{strategy_id}_report.html` — 自包含 HTML 回测报表（Bokeh INLINE 资源，可离线打开），包含：
    - 头部：标的名/代码、策略 id、回测区间、初始资金、最终净值、总收益率
-   - 6 张 KPI 卡片：年化收益、最大回撤、夏普比率、胜率、盈亏比、总交易数
+   - 8 张 KPI 卡片：年化收益、最大回撤、Sharpe、Sortino、Calmar、胜率、盈亏比、总交易数
+   - Strategy Summary 表：胜负平、期望值、最佳/最差交易、持仓时长、连胜连亏、日度统计、B&H 与 alpha（freqtrade SUMMARY METRICS）
    - 净值曲线 \+ 回撤联动图（Bokeh，共享 x 轴，hover tooltip）
+   - Exit Reason Stats 表：四类平仓原因的笔数/胜率/均持时/盈亏聚合
+   - Monthly Returns 月度收益热力表（年×12 月，正绿负红）
    - 平仓交易 DataTable（Bokeh，含 NumberFormatter 金额/百分比格式）
    - action\_log 信号表（HTML table，BUY 绿/SELL 红，含未平仓 BUY）
    - Analyzer 字段表（递归压平 5 个 analyzer 的 namedtuple/dict/list）
-   - btplotting K 线图相对链接
+   - Plotly K 线交互图相对链接
 
-2. `{code}_{strategy_id}_interactive.html` — btplotting K 线 \+ 指标 \+ 成交标记交互图
+2. `{code}_{strategy_id}_interactive.html` — freqtrade 风格 Plotly 交互图（plotly.js 内联，可离线打开）：
+   - K 线主图：红涨绿跌实心蜡烛；策略指标覆盖层（trend: EMA20/60；range: BB upper/mid/lower；breakout: Donchian upper/lower）
+   - 成交标记：青色上三角=入场，绿/红下三角=盈利/亏损出场（hover 显示价格、净盈亏、exit 类别），琥珀三角=期末未平仓；entry→exit 虚线连接每笔交易
+   - 子图：成交量（红涨绿跌柱）、ATR14、**MACD（所有策略；trend 用指标线 macd/macdsignal/macdhist，range/breakout 从收盘价按 12/26/9 现算，仅绘图）**；trend 再追加 ADX（plus_di/minus_di/adx_min 阈值）
+   - 1M/3M/6M/1Y/All 区间按钮、周末跳过、scrollZoom、暗色主题
 
 > 旧版 PNG 产物（`_equity_dd.png` / `_win_pie.png`）与 `plot_all` / `plot_equity_drawdown` / `plot_win_pie` / `_setup_chinese_font` 已全部移除。
 
@@ -329,9 +349,9 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 **信号生成逻辑**：
 
 - 读取 config.yaml 的 stock_list 与 strategy_params，应用 `stock_blacklist`
-- 读取 output/stock_filter.csv：basic_passed=False 的标的跳过；按 regime 经 `routed_strategies` 收窄参与共识的策略集；报告缺失时安全降级为全部 active 策略
+- 读取 output/stock_filter.csv：pairlist_passed=False 的标的跳过；按 regime 经 `routed_strategies` 收窄参与共识的策略集；报告缺失时安全降级为全部 active 策略
 - 读取 manual_trades.csv 计算当前持仓（BUY 累加 \- SELL 累加，净量 > 0 即为持仓）
-- 覆盖 ds.end_date 为当天日期（确保增量拉取覆盖今日行情）
+- 覆盖 data_provider.end_date 为当天日期（确保增量拉取覆盖今日行情）
 - 对每只标的的每个（路由后的）策略运行回测，提取 action_log（决策时信号日志）
 - 信号分类：最后一根 bar 触发买入/卖出 → BUY/SELL；已有持仓无新信号 → HOLD；无持仓无信号 → WAIT
 
@@ -361,7 +381,7 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 - commission\_config：完整A股交易费率
 
-- stock\_filter：前置筛选三层阈值（basic 质量门 / trend 趋势门 / regime 分类），详见 4.2 节
+- stock\_filter：前置筛选阈值（stock_filter.pairlist 五组 Pairlist Filters / trend 趋势门 / regime 分类），详见 4.2 节
 
 - opt\_pipeline：外样本校验与滚动窗口校验的可调参数（切分日期、过拟合阈值、窗口长度、最低 K 线数、`optimize_metric` 排序目标），详见 4.6 节
 
@@ -377,7 +397,7 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 所有输出路径固定、命名规则固定、用途固定。
 
-- stock\_filter\.csv：股票池前置筛选报告（basic/trend 指标与通过标记、regime 标签、失败原因），驱动策略路由
+- stock\_filter\.csv：股票池前置筛选报告（pairlist/trend 指标与通过标记 pairlist_passed/passed、regime 标签、失败原因），驱动策略路由
 
 - metrics\_summary\.csv：汇总所有标的策略绩效
 
@@ -387,7 +407,7 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 - plots/\*\_report\.html：自包含 HTML 回测报表（KPI/净值-回撤图/交易表/Analyzer）
 
-- plots/\*\_interactive\.html：btplotting K 线 \+ 指标 \+ 成交标记交互图
+- plots/\*\_interactive\.html：Plotly freqtrade 风格 K 线 \+ 成交量 \+ 指标子图 \+ 成交标记交互图
 
 - manual\_review\_result\.csv：实盘复盘报告
 
@@ -415,7 +435,7 @@ pandas
 numpy
 pyyaml
 bokeh
-btplotting
+plotly
 tushare
 scipy
 ```

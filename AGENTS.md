@@ -13,11 +13,11 @@ SkyQuant 是一套 A 股日线量化策略回测流水线，支持全自动参�
 | 层 | 文件 | 职责 |
 |----|------|------|
 | 1. 配置层 | config.yaml | 全部可配置项外置：资金/区间/滑点、黑白名单、费率、筛选阈值、策略参数、寻优目标（profit_rate/sharpe/calmar） |
-| 2. 数据层 | data_source.py | Tushare 拉取/增量更新/CSV 缓存/标准化 DataFrame；无任何交易逻辑 |
-| 3. 股票池筛选层 | stock_filter.py | basic 质量门（停牌/流动性/低价/ST，常驻）+ trend 趋势门（--screen）+ regime 分类路由；策略外部选股 |
+| 2. 数据层 | dataprovider.py | Tushare 拉取/增量更新/CSV 缓存/标准化 DataFrame；无任何交易逻辑（`DataProvider` 类） |
+| 3. 股票池筛选层 | stock_filter.py | Pairlist Filters 质量门（age/price/volume/turnover/liquidity/name，常驻）+ trend 趋势门（--screen）+ regime 分类路由；策略外部选股 |
 | 4. 策略插件层 | strategy/*.py | 每个策略一个文件，继承统一 BaseStrategy，只做指标与买卖信号；注册到 STRATEGY_MAPPING 即插拔 |
 | 5. 回测引擎层 | main.py | 封装 Cerebro：数据/手续费/滑点/Analyzer，默认按 regime 自动路由策略，遍历标的收集结果 |
-| 6. 指标报表层 | report.py | calc_metrics 指标计算 + 自包含 HTML 报告 + btplotting K 线；统一输出标准 |
+| 6. 指标报表层 | report.py | calc_metrics 指标计算 + 自包含 HTML 报告 + Plotly freqtrade 风格 K 线交互图；统一输出标准 |
 | 7. 参数寻优层 | opt_pipeline/*.py | 网格→外样本→滚动→聚合→写配置；多指标 dict 贯穿 worker/CSV，回测与寻优复用同一套策略代码 |
 | 8. 一键入口 | run_all.py | 数据→筛选→按标的寻优闭环→批量回测→复盘；统一日志 output/run.log |
 | 9. 公共工具层 | comm.py | 手续费、路径常量单一来源、setup_logging、apply_blacklist、build_commission、apply_broker_settings |
@@ -29,13 +29,14 @@ SkyQuant 是一套 A 股日线量化策略回测流水线，支持全自动参�
 | freqtrade | SkyQuant | 说明 |
 |-----------|----------|------|
 | `populate_indicators()` | `populate_indicators()` | 策略专属指标初始化 |
-| `populate_entry_trend()` / `populate_exit_trend()` | `populate_entry()` / `populate_exit()` | 入场/出场信号，含策略专属方向过滤 |
-| Pairlist Filters（VolatilityFilter/PriceFilter/AgeFilter…） | stock_filter.py（basic/trend 门） | 标的池过滤在策略外部 |
-| Protections（CooldownPeriod/StoplossGuard/MaxDrawdown） | BaseStrategy `cooldown_bars`/`stoploss_guard_*`/`max_drawdown_limit` | 全局风控保护，只拦开仓，默认全关 |
+| `populate_entry_trend()` / `populate_exit_trend()` | `populate_entry_trend()` / `populate_exit_trend()` | 入场/出场信号，含策略专属方向过滤（同名对齐） |
+| 指标列 `macd`/`macdsignal`/`macdhist`、`adx`/`plus_di`/`minus_di`、`bb_*band` | trend/range 策略同名属性 | 指标变量名对齐 |
+| Pairlist Filters：AgeFilter/PriceFilter/VolumeFilter（+turnover/liquidity A 股扩展） | stock_filter.py `stock_filter.pairlist` 五组过滤器 | 标的池过滤在策略外部 |
+| Protections（CooldownPeriod/StoplossGuard/MaxDrawdown） | BaseStrategy `cooldown_period_candles`/`stoploss_guard_*_candles`/`max_allowed_drawdown` | 全局风控保护，只拦开仓，默认全关 |
 | stoploss / trailing_stop | `max_loss_stop_ratio` / `trail_atr_multiple` | 止损与追踪止损 |
 | trailing_stop_positive + trailing_only_offset_is_reached | `trail_tighten_profit_multiple` + `trail_tight_atr_multiple` | 浮盈达标后收紧追踪 |
 | minimal_roi | `take_profit_atr_multiple`（ATR 距离制，默认关） | 固定止盈 |
-| DataProvider | data_source.py | 数据获取与缓存 |
+| DataProvider | dataprovider.py（`DataProvider` 类） | 数据获取与缓存（同名对齐） |
 | Hyperopt | opt_pipeline/（网格+外样本+滚动） | 参数寻优 |
 | `can_short=False` | 全项目只做多 | A 股约束 |
 
@@ -54,7 +55,7 @@ python run_all.py
 python run_all.py --all-stocks         # 手动触发全量标的池
 python run_all.py --skip-data          # 缓存加速模式
 python run_all.py --stock-list 000725,600519   # 仅运行指定股票（逗号分隔）
-python run_all.py --screen             # basic 质量门之上再加趋势门，只对 basic+trend 双通过的标的跑流水线
+python run_all.py --screen             # Pairlist Filters 质量门之上再加趋势门，只对 pairlist+trend 双通过的标的跑流水线
 python run_all.py --all-stocks --screen  # 全量标的池 + 趋势性前置过滤
 
 # 单独跑股票池前置筛选（只读本地缓存，输出 output/stock_filter.csv）
@@ -72,7 +73,7 @@ python main.py --stock-list 000725 --strategy trend  # 仅回测指定股票
 
 ### 标的集合与 `--stock-list` 参数说明
 
-**默认标的集合**：`run_all.py` 与 `param_optimize.py` 默认只处理回归标的集 `REGRESSION_STOCKS`（5 只，定义在 `opt_pipeline/common.py`，与 tests/regression 共用同一常量）——每次修改参数后的快速迭代门槛。全量标的池需显式 `--all-stocks` 手动触发。`main.py`、`daily_signal.py`、`manual_trade_review.py` 默认仍用 config.yaml 全部标的。
+**默认标的集合**：`run_all.py` 与 `param_optimize.py` 默认只处理回归标的集 `REGRESSION_STOCKS`（当前仅 `["000725"]`，定义在 `opt_pipeline/common.py`，与 tests/regression 共用同一常量）——每次修改参数后的快速迭代门槛。全量标的池需显式 `--all-stocks` 手动触发。`main.py`、`daily_signal.py`、`manual_trade_review.py` 默认仍用 config.yaml 全部标的。
 
 `--stock-list` 参数（逗号分隔的股票代码列表）：
 
@@ -80,7 +81,7 @@ python main.py --stock-list 000725 --strategy trend  # 仅回测指定股票
 - `main.py`/`daily_signal.py`/`manual_trade_review.py`：不传时用 config.yaml 全部标的
 - 五个寻优阶段脚本（param_optimize/out_sample/rolling/aggregate/write_config）均支持 `--stock-list`；阶段 CSV 经 `common.write_stage_csv` 按标的合并写——重跑某标的只替换该标的的行，其余标的行保留
 - `run_all.py` 结构：批量拉数据 → **股票池前置筛选（常驻，见 stock_filter.py）** → 按标的循环跑寻优链 5 阶段（单标的闭环后再下一个）→ 最后批量回测 + 手工复盘
-- `run_all.py --screen`：basic 质量门常驻；加 `--screen` 后在 basic 通过者之上再做趋势性门控，只把 basic+trend 双通过的标的送入寻优；筛选报告写 `output/stock_filter.csv`（含 regime 标签，驱动策略路由）
+- `run_all.py --screen`：Pairlist Filters 质量门常驻；加 `--screen` 后在质量门通过者之上再做趋势性门控，只把 pairlist+trend 双通过的标的送入寻优；筛选报告写 `output/stock_filter.csv`（含 regime 标签，驱动策略路由）
 
 ### stock_filter.py — 股票池前置筛选层（数据层与策略层之间）
 
@@ -88,21 +89,21 @@ python main.py --stock-list 000725 --strategy trend  # 仅回测指定股票
 
 **两层门控 + 一个分类**（阈值全部在 config.yaml `stock_filter`）：
 
-1. **basic 质量门（run_all 常驻；趋势策略也执行）**：剔除停牌/流动性差/低价/ST 标的
-2. **trend 趋势门（仅 `--screen` 强制）**：原趋势性 7 阈值
+1. **Pairlist Filters 质量门（run_all 常驻；趋势策略也执行）**：概念对齐 freqtrade Pairlist Filters，剔除数据不足/停牌/流动性差/低价/ST 标的
+2. **trend 趋势门（仅 `--screen` 强制）**：趋势性 7 阈值
 3. **regime 分类（常驻，不剔除只贴标签）**：trend / range / breakout，决定该标的路由到哪个策略
 
-basic 指标（DEFAULT_BASIC，config `stock_filter.basic` 覆盖）：
+Pairlist Filters（`DEFAULT_PAIRLIST_FILTERS`，config `stock_filter.pairlist` 五组覆盖）：
 
-| 指标 | 默认阈值 | 含义 |
-|------|----------|------|
-| `min_bars` | 120 | 缓存 K 线数下限 |
-| `max_zero_volume_ratio` | 0.01 | 零成交量 bar 占比上限（停牌） |
-| `max_gap_days` | 20 | 相邻 bar 最大日历日缺口（长期停牌） |
-| `min_avg_amount_yi` | 0.5 | 日均成交额下限（亿元；Tushare amount 单位千元，/100_000） |
-| `min_avg_turn` | 0.2 | 日均换手率下限（%，0.2 即 0.2%；过低会误杀京沪高铁等大盘股） |
-| `min_mean_close` | 1.0 | 均价下限（仙股） |
-| 名称规则 | ST/*ST/退 | 名称含 ST 或「退」直接剔除 |
+| freqtrade 概念 | 组/键 | 默认阈值 | 含义 |
+|------|------|----------|------|
+| AgeFilter | `age_filter.min_days_listed` | 120 | 窗口内交易日数下限（指标预热） |
+| PriceFilter | `price_filter.low_price` | 1.0 | 均价下限（剔除仙股/退市风险价区） |
+| VolumeFilter | `volume_filter.min_avg_amount_yi`（`lookback_days`，0=全窗口） | 0.5 | 日均成交额下限（亿元；Tushare amount 单位千元，/100_000） |
+| A 股扩展 | `turnover_filter.min_avg_turn` | 0.2 | 日均换手率下限（%，0.2 即 0.2%；过低会误杀大盘股） |
+| A 股扩展 | `liquidity_filter.max_zero_volume_ratio` | 0.01 | 零成交量 K 线占比上限（停牌） |
+| A 股扩展 | `liquidity_filter.max_gap_days` | 20 | 相邻 K 线最大日历日缺口（长期停牌） |
+| 自定义名称规则 | 常驻无配置 | ST/*ST/退 | 名称含 ST 或「退」直接剔除（freqtrade 无内建对应过滤器） |
 
 trend 指标（config `stock_filter.trend`）：
 
@@ -116,24 +117,24 @@ trend 指标（config `stock_filter.trend`）：
 | `price_range` | ≥ 0.40 | (期间最高-最低)/均价 |
 | `max_bull_streak` | ≥ 150 | 最长连续 EMA60>EMA120 天数 |
 
-**CSV 列**：`stock_code, name, basic 各指标, basic_passed, basic_fail_reason, trend 各指标, passed(=basic AND trend), fail_reason, regime`。
+**CSV 列**：`stock_code, name, pairlist 各指标(bars/zero_volume_ratio/max_gap_days/avg_amount_yi/avg_turn/mean_close), pairlist_passed, pairlist_fail_reason, trend 各指标, passed(=pairlist AND trend), fail_reason, regime`。
 
 **用法**：
 - 独立：`python stock_filter.py`（全量）/ `--stock-list 000725,600519`
-- 流水线：`python run_all.py`（basic 常驻）/ `--screen`（basic+trend）
+- 流水线：`python run_all.py`（Pairlist Filters 常驻）/ `--screen`（pairlist+trend）
 - ADX 用 Wilder 平滑手动实现（无外部 ta 库依赖）
 
 ## 文件清单
 
 | 文件 | 职责 |
 |------|------|
-| run_all.py | 全流水线调度入口，日志管理，异常终止（行情→常驻 basic 筛选→按标的寻优 5 阶段→批量回测/复盘；--screen 追加趋势门） |
-| stock_filter.py | 股票池前置筛选层：basic 质量门（停牌/流动性/低价/ST）+ trend 趋势门 + regime 分类（trend/range/breakout 路由），输出 output/stock_filter.csv |
+| run_all.py | 全流水线调度入口，日志管理，异常终止（行情→常驻 Pairlist Filters 筛选→按标的寻优 5 阶段→批量回测/复盘；--screen 追加趋势门） |
+| stock_filter.py | 股票池前置筛选层：Pairlist Filters 质量门（Age/Price/Volume + turnover/liquidity/name A 股扩展）+ trend 趋势门 + regime 分类（trend/range/breakout 路由），输出 output/stock_filter.csv |
 | main.py | 回测引擎层：加载配置、遍历标的（默认按 regime 自动路由策略）、执行回测、输出指标与图表；隔离 Cerebro 细节 |
-| daily_signal.py | 每日信号生成：运行策略、输出买卖/持有信号与操作建议（按 regime 收窄策略集、basic 门剔除、黑名单过滤） |
-| data_source.py | 数据层：Tushare 行情拉取、增量更新、本地缓存、AStockData feed（不含任何交易逻辑） |
+| daily_signal.py | 每日信号生成：运行策略、输出买卖/持有信号与操作建议（按 regime 收窄策略集、Pairlist 门剔除、黑名单过滤） |
+| dataprovider.py | 数据层（`DataProvider` 类）：Tushare 行情拉取、增量更新、本地缓存、AStockData feed（不含任何交易逻辑） |
 | comm.py | 公共工具层：A 股手续费模型、路径常量单一来源（PROJECT_ROOT/CACHE/OUTPUT/PLOT/LOG/CONFIG）、setup_logging、apply_blacklist、build_commission、apply_broker_settings（资金+佣金+可选滑点） |
-| report.py | 指标与报表层：calc_metrics/calc_equity_metrics（年化、回撤、夏普、卡玛、胜率、盈亏比）+ 自包含 HTML 回测报告 + btplotting K 线图（合并原 metrics_utils.py + plot_utils.py） |
+| report.py | 指标与报表层：calc_metrics/calc_equity_metrics（年化、回撤、夏普、Sortino、卡玛、胜率、盈亏比、期望值、B&H alpha）+ 自包含 HTML 回测报告 + Plotly freqtrade 风格 K 线交互图（合并原 metrics_utils.py + plot_utils.py，取代 btplotting） |
 | manual_trade_review.py | 手工交易复盘：策略信号匹配、对比统计（黑名单过滤、路径锚定、滑点一致） |
 | strategy/base.py | 策略基类：ATR 仓位管理、追踪止损、动态止盈、全局风控保护（Cooldown/StoplossGuard/MaxDrawdown，对齐 freqtrade Protections）、action_log 信号日志、统一输出接口（不设方向性入场门控） |
 | strategy/__init__.py | STRATEGY_MAPPING 策略注册表、DEFAULT_STRATEGY_PARAMS 默认参数 |
@@ -181,7 +182,7 @@ trend 指标（config `stock_filter.trend`）：
    - **datetime 类型精度**：GenericCSVData 走字符串 `dtformat` 解析，而 `_filter_by_start_date` 需向量化比较 `df["datetime"] >= start_dt`，PandasData 路径天然支持 `parse_dates=["datetime"]`。
    - **适用边界**：GenericCSVData 仅适合纯静态、列名规范、无中间处理、只用标准 OHLCV 的场景；本项目命中 PandasData 全部适用条件（增量更新/合并/过滤、挂载扩展列、列名非标准）。
 
-8. **分层解耦与策略插件化**：数据（data_source）、选股（stock_filter）、信号（strategy）、回测（main）、报表（report）职责严格分开。策略类禁止读写文件/拉数据/绘图，新增策略只需新增 strategy 下文件并注册 STRATEGY_MAPPING。标的前置过滤 > 策略内过滤——震荡/停牌/ST 标的在 stock_filter 层剔除或路由，不把全部标的硬塞给策略试错。
+8. **分层解耦与策略插件化**：数据（dataprovider）、选股（stock_filter）、信号（strategy）、回测（main）、报表（report）职责严格分开。策略类禁止读写文件/拉数据/绘图，新增策略只需新增 strategy 下文件并注册 STRATEGY_MAPPING。标的前置过滤 > 策略内过滤——震荡/停牌/ST 标的在 stock_filter 层剔除或路由，不把全部标的硬塞给策略试错。
 
 9. **回测与寻优同一指标口径**：worker `_run_single_combo` 不再用 FinalValueAnalyzer 只取终值，而是跑完整策略后从 `get_equity_dataframe()` 经 report.calc_equity_metrics 算 {profit_rate, sharpe, calmar, drawdown}，与 main.py 回测报表同源；broker 装配（佣金+滑点）经 comm_config dict 传子进程，保证两种路径口径一致。config `opt_pipeline.optimize_metric` 决定网格/聚合排序列（profit_rate/sharpe/calmar）。
 
@@ -219,10 +220,10 @@ trend 指标（config `stock_filter.trend`）：
 开仓门控(基类): 无——方向性过滤不做全局前提（freqtrade 式设计：全局层只管风控/执行；
               标的适配交给 stock_filter 层）。历史教训：四重过滤/EMA 前提做强 global
               门控都会损伤 range/breakout（且 trend 在震荡股上也被拖累）
-趋势过滤(trend 专属): EMA(sma_fast)>EMA(sma_slow) 且 MACD多头 且 ATR/close > min_volatility_ratio
-              且 ADX >= adx_min 且 +DI > -DI（trend._trend_filters_ok 内检查）
-MACD 多头判定: DIF > 0（零轴上方）且 DIF > DEA（金叉状态）
-              且 DIF 持续上行 macd_momentum_bars 根、MACD 柱持续放大（动量增强）
+趋势过滤(trend 专属): EMA(ema_fast)>EMA(ema_slow) 且 MACD多头 且 ATR/close > min_volatility_ratio
+              且 ADX >= adx_min 且 plus_di > minus_di（trend._trend_filters_ok 内检查）
+MACD 多头判定: macd(DIF) > 0（零轴上方）且 macd > macdsignal（金叉状态）
+              且 DIF 持续上行 macd_momentum_bars 根、macdhist 柱持续放大（动量增强）
 ATR 仓位公式:  size = int(总资产 * max_risk_ratio / (ATR * atr_multiple))
 固定止盈价:    take_price = entry_price + ATR * take_profit_atr_multiple（该参数非 None 时，默认关闭）
 追踪止损价:    stop = 持仓以来最高价 - trail_atr_multiple × ATR（只上不下 ratchet）
@@ -241,11 +242,11 @@ ATR 仓位公式:  size = int(总资产 * max_risk_ratio / (ATR * atr_multiple))
 def _position_size(self, atr_multiple) -> int  # ATR 仓位计算（含 NaN 守卫）
 def _open_position(self, atr_multiple)          # 买入 + 设初始止损/止盈 + 记录 entry_bar/entry_atr_multiple
 def _close_position(self)                         # 卖出 + 重置全部持仓状态 + 记录 action_log
-def _update_trailing_stop(self)                   # 追踪止损 + 动态止盈更新（next 调用 populate_exit 前自动执行）
+def _update_trailing_stop(self)                   # 追踪止损 + 动态止盈更新（next 调用 populate_exit_trend 前自动执行）
 def _protections_allow_entry(self) -> bool        # 全局风控保护（Cooldown/StoplossGuard/MaxDrawdown，默认全关）
-def next(self)                                    # 模板方法: 无仓->Protections 门控后 populate_entry(); 有仓先查固定止盈(默认关), 再 _update_trailing_stop, 再 populate_exit()
-def populate_entry(self)                          # 子类重写: 入场信号（含策略专属过滤，如 trend 的 _trend_filters_ok）
-def populate_exit(self)                           # 子类重写: 出场条件（检查 stop_price 或策略专属信号）
+def next(self)                                    # 模板方法: 无仓->Protections 门控后 populate_entry_trend(); 有仓先查固定止盈(默认关), 再 _update_trailing_stop, 再 populate_exit_trend()
+def populate_entry_trend(self)                    # 子类重写: 入场信号（含策略专属过滤，如 trend 的 _trend_filters_ok）
+def populate_exit_trend(self)                     # 子类重写: 出场条件（检查 stop_price 或策略专属信号）
 def stop(self)                                    # 回测结束: self.final_value = broker.getvalue()
 def get_equity_dataframe() -> pd.DataFrame        # 每日净值
 def get_trade_dataframe() -> pd.DataFrame         # 已平仓交易记录
@@ -263,15 +264,15 @@ def get_action_dataframe() -> pd.DataFrame        # 决策时信号日志（含�
 
 ### 策略子类 — 入场/出场条件
 
-**入场过滤归属**（BaseStrategy 不设全局门控）：方向性过滤是策略 alpha 的一部分，由各子类 `populate_entry` 自管——trend 自带趋势过滤（EMA 多头 + MACD 多头 + 波动率 + ADX/DI 方向），range/breakout 无过滤；标的与策略的适配由 stock_filter 的 regime 路由负责（参考 freqtrade：入场在策略内、标的池过滤在策略外、基类只管风控与执行）。
+**入场过滤归属**（BaseStrategy 不设全局门控）：方向性过滤是策略 alpha 的一部分，由各子类 `populate_entry_trend` 自管——trend 自带趋势过滤（EMA 多头 + MACD 多头 + 波动率 + ADX/DI 方向），range/breakout 无过滤；标的与策略的适配由 stock_filter 的 regime 路由负责（参考 freqtrade：入场在策略内、标的池过滤在策略外、基类只管风控与执行）。
 
 | 策略 | 关键参数（默认值） | 专属入场信号 | 出场条件 |
 |------|-------------------|----------|----------|
-| trend | `trail_atr_multiple=1.6`, `momentum_period=20`，另有趋势过滤参数 `sma_*`/`macd_*`/`adx_*`/`min_volatility_ratio` | 趋势过滤（EMA/MACD/波动率/ADX）通过 **且** Momentum>0 | 追踪止损+动态止盈 / 动量转负 |
-| range | `trail_atr_multiple=2.0`, `boll_period=20`, `drop_ratio=0.18` | close <= 布林下轨 **或** 跌幅 > drop_ratio | 追踪止损+动态止盈 / 突破布林上轨 |
-| breakout | `trail_atr_multiple=2.0`, `breakout_period=20` | close > 过去 N 日最高价（唐奇安突破） | 追踪止损+动态止盈 / 跌破唐奇安下轨 |
+| trend | `trail_atr_multiple=1.6`, `momentum_period=20`，另有趋势过滤参数 `ema_*`/`macd_*`/`adx_*`/`min_volatility_ratio` | 趋势过滤（EMA/MACD/波动率/ADX）通过 **且** Momentum>0 | 追踪止损+动态止盈 / 动量转负 |
+| range | `trail_atr_multiple=2.0`, `bb_period=20`, `drop_ratio=0.18` | close <= bb_lowerband **或** 跌幅 > drop_ratio | 追踪止损+动态止盈 / 突破 bb_upperband |
+| breakout | `trail_atr_multiple=2.0`, `breakout_period=20` | close > donchian_upper（唐奇安上轨突破） | 追踪止损+动态止盈 / 跌破 donchian_lower |
 
-> 注：止盈止损/仓位参数定义在 BaseStrategy，3 个策略统一继承；趋势过滤参数（sma_*/macd_*/adx_*/min_volatility_ratio）仅 trend 持有。追踪止损与动态止盈由基类 `_update_trailing_stop` 自动处理。`take_profit_atr_multiple` 默认 None（纯追踪止损）。
+> 注：止盈止损/仓位参数定义在 BaseStrategy，3 个策略统一继承；趋势过滤参数（ema_*/macd_*/adx_*/min_volatility_ratio）仅 trend 持有。追踪止损与动态止盈由基类 `_update_trailing_stop` 自动处理。`take_profit_atr_multiple` 默认 None（纯追踪止损）。
 
 ### 标的分类与策略路由（regime → strategy）
 
@@ -295,18 +296,19 @@ def get_action_dataframe() -> pd.DataFrame        # 决策时信号日志（含�
 trail_atr_multiple=1.6        # 追踪止损 ATR 倍数（兼作仓位分母）
 momentum_period=20            # 动量确认周期；>0 才开仓
 max_risk_ratio=0.02
-# 趋势过滤（策略专属）
-sma_fast=20 / sma_slow=60
+# 趋势过滤（策略专属；变量名对齐 freqtrade）
+ema_fast=20 / ema_slow=60
 macd_fast=12 / macd_slow=26 / macd_signal=9 / macd_momentum_bars=2
 min_volatility_ratio=0.015
 adx_period=14 / adx_min=20
+# 指标属性：mom / macd / macdsignal / macdhist / adx / plus_di / minus_di
 ```
 
-**入场逻辑**（`populate_entry`）：
+**入场逻辑**（`populate_entry_trend`）：
 
 1. `_trend_filters_ok()`（EMA 多头 + MACD 多头 + 波动率 + ADX/方向）且 `self.mom[0] > 0` → 调用 `self._open_position(trail_atr_multiple)`，reason 记录 `trend: filters passed + momentum X > 0`
 
-**出场逻辑**（`populate_exit`）：
+**出场逻辑**（`populate_exit_trend`）：
 
 1. `close <= stop_price` → 追踪止损（含动态止盈收紧），reason 用 `_trail_stop_reason()`
 2. `mom < 0` → 动量转负，reason `momentum_negative: momentum X < 0`
@@ -322,19 +324,19 @@ STRATEGY_MAPPING = {
 
 DEFAULT_STRATEGY_PARAMS = {
     "trend": {"trail_atr_multiple": 1.6, "momentum_period": 20, "max_risk_ratio": 0.02},
-    "range": {"trail_atr_multiple": 2.0, "boll_period": 20, "drop_ratio": 0.18, "max_risk_ratio": 0.02},
+    "range": {"trail_atr_multiple": 2.0, "bb_period": 20, "drop_ratio": 0.18, "max_risk_ratio": 0.02},
     "breakout": {"trail_atr_multiple": 2.0, "breakout_period": 20, "max_risk_ratio": 0.02},
 }
 ```
 
 `DEFAULT_STRATEGY_PARAMS` 为各策略的默认参数，当 config.yaml 的 `strategy_params` 中没有某只股票的优化参数时，`daily_signal.py` 和 `manual_trade_review.py` 会回退使用这些默认参数。
 
-### data_source.py
+### dataprovider.py
 
 **AStockData(bt.feeds.PandasData)**：扩展 K 线 feed，挂载 `preclose`/`amount`/`turn`/`pctChg` 扩展列。
 
 ```python
-class DataSource:
+class DataProvider:
     def __init__(self, config_path=None, cache_root=None, credentials_path=None)
     def load_config() -> dict
     def get_ts_code(stock_code) -> str           # 6开头->SH, 否则->SZ
@@ -371,13 +373,17 @@ main.py / daily_signal.py / manual_trade_review.py / opt worker 全部经 `build
 ```python
 def calc_equity_metrics(equity_df, risk_free_rate=0.02) -> dict
     # 仅用净值曲线：{total_return, annual_return, max_drawdown, sharpe_ratio, calmar_ratio}（worker 用）
-def calc_metrics(equity_df, trades_df, risk_free_rate=0.02) -> dict
-    # 净值指标 + {win_rate, profit_factor, total_trades}
+def calc_metrics(equity_df, trades_df, risk_free_rate=0.02, price_series=None) -> dict
+    # 净值指标 + freqtrade 对齐交易/日度指标（见下）
+def normalize_exit_reason(reason) -> str     # 原始 reason -> stop_loss/trailing_stop/take_profit/exit_signal
+def summarize_exit_reasons(trades_df) -> pd.DataFrame  # EXIT REASON STATS：类别×笔数/胜率/均持时/盈亏
+def build_console_summary(metrics, trades_df) -> str    # freqtrade 风格多行控制台摘要（main.py 输出）
 def render_report(equity_df, trades_df, action_df, metrics, analyzer_results,
                   out_dir, code, strategy_name, start_date, end_date,
                   initial_capital, final_value,
                   interactive_html=None, stock_name=None) -> str  # 返回 HTML 路径
-def render_interactive_chart(strategy, out_dir, code, strategy_name) -> str     # btplotting K 线图路径
+def render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, trades_df, stock_name=None) -> str
+    # freqtrade 风格 Plotly 交互图路径（K线/成交量/ATR/MACD 全策略/ADX trend + 进出场标记）
 ```
 
 **指标公式**：
@@ -387,28 +393,33 @@ def render_interactive_chart(strategy, out_dir, code, strategy_name) -> str     
 - 卡玛比率：`年化收益 / abs(最大回撤)`
 - 胜率：`profit_loss_net > 0 的交易数 / 总交易数`
 - 盈亏比：`总盈利金额 / 总亏损金额`
+- Sortino：`sqrt(252) * mean(daily_ret) / std(负收益日)`（仅下行波动）
+- 期望值：`win_rate×均盈 - loss_rate×均亏`；expectancy_ratio = 期望值/均亏（对齐 freqtrade）
+- 连胜/连亏：按平仓顺序对 profit_loss_net 符号计数
+- 持仓时长：entry_date→exit_date 日历日（全部/盈利单/亏损单分别均值）
+- 日度统计：best/worst_day、winning/losing/zero_days
+- market_change：传 price_series 时计算 Buy & Hold 收益，alpha_vs_buyhold = 策略总收益 − B&H
+
+**Exit reason 归一化**：原始 reason 前缀映射——`max_loss_stop→stop_loss`、`trail_stop/trail_stop_tightened→trailing_stop`、`take_profit→take_profit`、策略子类信号（momentum_negative/boll_upper_break/donchian_lower_break）→`exit_signal`；缺省 other，空值 left_open。
 
 **render_report 设计**：
 
 - 使用 Bokeh `components()` + `INLINE` 资源输出自包含 HTML，可离线打开
 - 内部模块：`_build_equity_plot`（净值图 + 联动 x 轴的回撤 varea 填充）、`_build_trade_table`（DataTable + `NumberFormatter`）、`_flatten_analyzer`（递归压平 namedtuple/dict/list 到 `(path, value)` 对）、`_build_action_table_html`、`_build_analyzer_table_html`
 - 调用方（main.py）注册 5 个 analyzer：`Returns / SharpeRatio / DrawDown / TradeAnalyzer / SQN`，名称见 `ANALYZER_NAMES` 常量；`getattr(strategy_instance.analyzers, name).get_analysis()` 提取后传入 `analyzer_results`
-- 产物：`output/plots/{code}_{strategy_name}_report.html`，相对链接到 `_{strategy_name}_interactive.html`（btplotting）
-- **btplotting/Python 3.14 兼容层**（项目边界内，不改 site-packages）：
-  - 惰性子类 `Py314CompatibleBacktraderPlotting(BacktraderPlotting)` 覆盖 `generate_bokeh_model()`，把第三方 `filter(None.__ne__, tab_panels)` 替换为 `[p for p in tab_panels if p is not None]`（Python 3.14 下 Bokeh Model 的 `None.__ne__` 返回 `NotImplemented`，bool 化报 `TypeError`）
-  - 渲染前 `_replace_empty_sentinels()` 遍历所有 analyzer 的 `get_analysis()`，把 backtrader 的 MAXINT(2^63−1) 空集合哨兵（只做多策略 `TradeAnalyzer.len.{short,short.won,short.lost}.min` 必现）原地替换为 None，避免 btplotting Analyzers 表序列化出 JS 安全整数范围外的 `BokehUserWarning`；`render_report` 的 analyzer 表将 None/哨兵显示为 N/A
-  - btplotting 内部调用已弃用的 `figure.circle/triangle(size=...)`，仅在 btplotting 调用边界 `catch_warnings` 抑制 `BokehDeprecationWarning`，不全局抑制
-- 已删除：旧的 `plot_all` / `plot_equity_drawdown` / `plot_win_pie` / `_setup_chinese_font`（matplotlib PNG 路径全部移除）
+- 产物：`output/plots/{code}_{strategy_name}_report.html`，相对链接到 `_{strategy_name}_interactive.html`（Plotly 交互图）
+- **交互图已从 btplotting 迁移到 Plotly（freqtrade 风格）**：`render_interactive_chart(strategy, out_dir, code, strategy_name, price_df, trades_df, stock_name=None)`，自包含 HTML（plotly.js 内联）。行布局：K 线主图（红涨绿跌实心蜡烛 + 策略指标覆盖层 + 进出场标记）+ 成交量 + ATR + **MACD（所有策略；trend 用指标线 macd/macdsignal/macdhist，range/breakout 由 `_compute_macd_from_close` 按 12/26/9 从收盘价现算，仅用于绘图）**；trend 策略再追加 ADX（plus_di/minus_di/adx_min 阈值线）子图。指标值经 `_line_to_numpy(line, n)` 从 backtrader line buffer 按 K 线根数对齐提取。入场=青色上三角、盈利出场=绿下三角、亏损出场=红下三角、期末未平仓=琥珀三角；每笔交易 entry→exit 虚线连接（win/loss 分色），hover 显示日期/价格/手数/盈亏/exit 类别；1M/3M/6M/1Y/All 区间按钮，周末 rangebreak，scrollZoom
+- 已删除：btplotting 兼容层（Py314CompatibleBacktraderPlotting / `_replace_empty_sentinels`）、旧的 `plot_all` / `plot_equity_drawdown` / `plot_win_pie` / `_setup_chinese_font`（matplotlib PNG 路径全部移除）
 
 ### daily_signal.py
 
 ```python
 def compute_holdings(trade_csv: Path) -> Dict[str, dict]        # BUY累加SELL累减, 返回{code: {size, avg_cost}}
-def run_strategy_actions(ds, comminfo, cfg, code, strategy_id, param) -> Optional[pd.DataFrame]  # 返回action_log
+def run_strategy_actions(data_provider, comminfo, cfg, code, strategy_id, param) -> Optional[pd.DataFrame]  # 返回action_log
 def classify_signal(action_df, last_bar_date) -> dict            # 最后action日期==last_bar_date->该action; 否则持仓->HOLD/空仓->WAIT
 def compute_consensus(actions: List[str]) -> str                # SELL > BUY > HOLD > WAIT
 def derive_suggested_action(consensus: str, currently_held: bool) -> str  # 持仓+SELL->卖出, 持仓+BUY->加仓, 未持仓+BUY->买入
-def build_report_rows(ds, comminfo, cfg, param_pool, stock_name_map, holdings, report_date, stock_list) -> List[dict]
+def build_report_rows(data_provider, comminfo, cfg, param_pool, stock_name_map, holdings, report_date, stock_list) -> List[dict]
 def print_console_summary(df, holdings, report_date)            # 三段式: 持仓操作/关注列表/统计汇总
 ```
 
@@ -416,19 +427,19 @@ def print_console_summary(df, holdings, report_date)            # 三段式: 持
 
 **默认参数回退**：当某只股票在 config.yaml 的 `strategy_params` 中没有优化后的参数时，使用 `strategy/__init__.py` 中的 `DEFAULT_STRATEGY_PARAMS` 作为回退，确保所有股票都能生成信号。
 
-**筛选层联动**：读 `output/stock_filter.csv`——`basic_passed=False` 的标的直接跳过；按 regime 用 `routed_strategies` 收窄参与共识的策略集（000725 regime=breakout 时只跑 breakout，不再三策略共识）；报告不存在时安全降级为全部 active 策略。config `stock_blacklist` 同步过滤。
+**筛选层联动**：读 `output/stock_filter.csv`——`pairlist_passed=False` 的标的直接跳过；按 regime 用 `routed_strategies` 收窄参与共识的策略集（000725 regime=breakout 时只跑 breakout，不再三策略共识）；报告不存在时安全降级为全部 active 策略。config `stock_blacklist` 同步过滤。
 
 ### main.py
 
 ```python
-def run_backtest(dataSource, comminfo, cfg, param_pool, code, strategy_id, force_refresh, stock_name=None) -> dict
+def run_backtest(data_provider, comminfo, cfg, param_pool, code, strategy_id, force_refresh, stock_name=None) -> dict
 def get_strategy_param(param_pool, code, strategy_id) -> (strategy_cls, params)
 def validate_manual_trades(valid_codes)
 ```
 
 **命令行参数**：`--force_refresh`（强制全量下载）、`--strategy`（策略 id；**默认 None=按 regime 自动路由**：`strategy_for_code` 读 stock_filter.csv 的 regime 标签 → config 已配策略 → 默认 trend）、`--stock-list`（逗号分隔股票代码，过滤 stock_list）
 
-> `--interactive` 已移除。每次回测默认生成自包含 HTML 报表与 btplotting K 线图，无需额外开关。
+> `--interactive` 已移除。每次回测默认生成自包含 HTML 报表与 Plotly K 线交互图，无需额外开关。
 
 **Cerebro 配置模式**（main.py / daily_signal.py / manual_trade_review.py 共用）：
 
@@ -445,8 +456,8 @@ strategy_instance = cerebro.run()[0]
 **HTML 报表产物**（main.py `run_backtest` 内）：
 
 - 每只标的生成 `output/plots/{code}_{strategy_id}_report.html`（自包含 Bokeh INLINE，可离线打开）
-- 同目录生成 `output/plots/{code}_{strategy_id}_interactive.html`（btplotting K 线 + 指标 + 成交标记，报表通过相对链接跳转）
-- 报表内容：头部（标的/策略/区间/初始资金/最终净值/总收益）、6 张 KPI 卡片（年化/最大回撤/夏普/胜率/盈亏比/交易数）、净值-回撤联动图（Bokeh，hover tooltip）、平仓交易 DataTable、action_log 信号表（含未平仓 BUY）、Analyzer 字段表（递归 flatten 5 个 analyzer）、K 线图链接
+- 同目录生成 `output/plots/{code}_{strategy_id}_interactive.html`（freqtrade 风格 Plotly 交互图：K 线 + 成交量 + ATR + MACD（全策略）+ ADX（trend）+ 进出场标记，报表通过相对链接跳转）
+- 报表内容（freqtrade 对齐）：头部（标的/策略/区间/初始资金/最终净值/总收益）、8 张 KPI 卡片（年化/最大回撤/Sharpe/Sortino/Calmar/胜率/盈亏比/交易数）、Strategy Summary 表（胜负平、期望值、最佳/最差交易、持仓时长、连胜连亏、日度统计、B&H 与 alpha）、净值-回撤联动图（Bokeh，hover tooltip）、Exit Reason Stats 表（按平仓类别聚合）、Monthly Returns 月度收益热力表（年×12 月，正负绿红）、平仓交易 DataTable、action_log 信号表（含未平仓 BUY）、Analyzer 字段表（递归 flatten 5 个 analyzer）、K 线图链接；控制台同步打印 freqtrade 风格多行摘要
 
 ### run_all.py
 
@@ -458,12 +469,12 @@ def run_step(name, cwd, cmd)    # subprocess.Popen 执行, 非零退出码->sys.
 - `--skip-data`：跳过行情拉取，使用本地缓存
 - `--stock-list 000725,600519`：仅运行指定股票（显式子集）
 - `--all-stocks`：手动触发 config.yaml 全量标的池；不传任何集合参数时默认回归标的集 `REGRESSION_STOCKS`
-- `--screen`：basic 质量门常驻；加该参数后追加 trend 趋势门（basic+trend 双通过才入流水线）
+- `--screen`：Pairlist Filters 质量门常驻；加该参数后追加 trend 趋势门（pairlist+trend 双通过才入流水线）
 
 **执行结构（数据层 → 筛选层 → 按标的寻优闭环 → 批量收尾）**：
 
 1. 行情拉取（批量，透传完整目标集；`--skip-data` 可跳过）
-2. **股票池前置筛选（常驻）**：`stock_filter.filter_stock_pool(ds, target_codes)` 写 output/stock_filter.csv；basic 未过者剔除并打印原因；`--screen` 时再用 trend `passed` 收窄；regime 标签供后续路由
+2. **股票池前置筛选（常驻）**：`stock_filter.filter_stock_pool(DataProvider(), target_codes)` 写 output/stock_filter.csv；Pairlist Filters 未过者剔除并打印原因；`--screen` 时再用 trend `passed` 收窄；regime 标签供后续路由
 3. 逐标的循环：对每个 code 依次调用 5 个阶段脚本并透传 `--stock-list <code>`：param_optimize.py（内部按 regime 只跑路由策略）→ out_sample_verify.py → rolling_window_verify.py → aggregate_best_param.py → write_param_to_config.py；单标的 5 阶段闭环后再处理下一个标的
 4. 收尾批量执行 main.py（不带 --strategy，按 regime 自动路由）与 manual_trade_review.py（手工复盘），透传完整目标集——保证 metrics_summary / 复盘报告等汇总 CSV 不被单标的覆盖
 
@@ -495,7 +506,7 @@ def _run_single_combo(task) -> dict
     # 注意：FinalValueAnalyzer 已删除，指标统一由净值曲线计算（回测/寻优同一口径）
 
 class BacktestRunner:
-    def __init__(self, data_source=None)
+    def __init__(self, data_provider=None)
     def run(self, df, strategy_id, params) -> dict                              # 单回测，返回指标 dict
     def profit_rate(self, result) -> float                                      # 从 dict 取 profit_rate
     def optimize(df, strategy_id, param_grid, maxcpu=1) -> List[Tuple[dict, dict]]  # 寻优网格（initializer Pool）
@@ -554,9 +565,9 @@ python opt_pipeline/param_optimize.py --maxcpu 4 --stock-list 000725,600519  # �
 | `average_down_drop` / `average_down_ratio` | 首次亏损达 drop 时摊低加仓（按当前持仓 × ratio，次日限价单，每笔交易仅一次）；加仓成交后地板随新均价下移（未纳入网格） | 0.10 / 0.25 |
 | `trail_tighten_profit_multiple` | 动态止盈激活门槛（浮盈达该 ATR 倍数后收紧止损）；None 关闭 | None |
 | `trail_tight_atr_multiple` | 动态止盈激活后的收紧追踪止损 ATR 倍数（应小于 trail_atr_multiple） | 0.8 |
-| `cooldown_bars` | **Protection·CooldownPeriod**：卖出成交后 N 根 bar 内禁止新开仓（None 关闭，已入网格 [None,5]） | None |
-| `stoploss_guard_trade_limit` / `stoploss_guard_lookback_bars` / `stoploss_guard_pause_bars` | **Protection·StoplossGuard**：回看 lookback 根 bar 内止损平仓达 limit 次即暂停开仓 pause 根 bar（None 关闭；仅 trade_limit 入网格 [None,3]，lookback/pause 固定） | None / 60 / 24 |
-| `max_drawdown_limit` | **Protection·MaxDrawdown**：净值自峰值回撤超该比例期间禁止新开仓（None 关闭，已入网格 [None,0.2]） | None |
+| `cooldown_period_candles` | **Protection·CooldownPeriod（`stop_duration_candles` 口径）**：卖出成交后 N 根 K 线内禁止新开仓（None 关闭，已入网格 [None,5]） | None |
+| `stoploss_guard_trade_limit` / `stoploss_guard_lookback_period_candles` / `stoploss_guard_stop_duration_candles` | **Protection·StoplossGuard**：回看 lookback 根 K 线内止损平仓达 limit 次即暂停开仓 stop_duration 根 K 线（None 关闭；仅 trade_limit 入网格 [None,3]，lookback/stop_duration 固定） | None / 60 / 24 |
+| `max_allowed_drawdown` | **Protection·MaxDrawdown（`max_allowed_drawdown` 同名）**：净值自峰值回撤超该比例期间禁止新开仓（None 关闭，已入网格 [None,0.2]） | None |
 
 各策略专属参数：
 
@@ -564,33 +575,33 @@ python opt_pipeline/param_optimize.py --maxcpu 4 --stock-list 000725,600519  # �
 |------|----------|------|----------|
 | `trail_atr_multiple` | 全部 3 个策略 | 追踪止损 ATR 倍数（stop=最高价−trail_atr_multiple×ATR），兼作仓位分母 | trend 1.6 / range 2.0 / breakout 2.0 |
 | `momentum_period` | trend | 动量确认周期，Momentum>0 才开仓 | 20 |
-| `sma_fast` / `sma_slow` | trend | EMA 多头过滤：快/慢均线多头排列才允许开仓（未纳入网格） | 20 / 60 |
-| `macd_fast` / `macd_slow` / `macd_signal` | trend | MACD 多头过滤的 EMA/信号线周期 | 12 / 26 / 9 |
-| `macd_momentum_bars` | trend | MACD 多头动量确认：DIF/柱需连续放大的 bar 数（未纳入网格） | 2 |
+| `ema_fast` / `ema_slow` | trend | EMA 多头过滤：快/慢均线多头排列才允许开仓（freqtrade ema_*；未纳入网格） | 20 / 60 |
+| `macd_fast` / `macd_slow` / `macd_signal` | trend | MACD 多头过滤的 EMA/信号线周期（指标属性 macd/macdsignal/macdhist） | 12 / 26 / 9 |
+| `macd_momentum_bars` | trend | MACD 多头动量确认：DIF/柱需连续放大的 K 线数（未纳入网格） | 2 |
 | `min_volatility_ratio` | trend | 波动率过滤：ATR/close 超过该下限才允许开仓 | 0.015 |
-| `adx_period` / `adx_min` | trend | ADX 趋势强度过滤：ADX >= adx_min 才开仓（< 视为横盘震荡），且要求 +DI > -DI 多头方向（adx_period 未纳入网格） | 14 / 20 |
+| `adx_period` / `adx_min` | trend | ADX 趋势强度过滤：ADX >= adx_min 才开仓（< 视为横盘震荡），且要求 plus_di > minus_di 多头方向（指标属性 adx/plus_di/minus_di；adx_period 未纳入网格） | 14 / 20 |
 | `drop_ratio` | range | 单日跌幅阈值，(preclose−close)/preclose > drop_ratio 视为超卖 | 0.18 |
-| `boll_period` | range | 布林带周期 | 20 |
-| `breakout_period` | breakout | 唐奇安通道周期，突破过去 N 日最高/最低 | 20 |
+| `bb_period` | range | 布林带周期（freqtrade bb-period；指标属性 bb_upperband/bb_middleband/bb_lowerband） | 20 |
+| `breakout_period` | breakout | 唐奇安通道周期（指标属性 donchian_upper/donchian_lower），突破过去 N 日最高/最低 | 20 |
 
-> 全局共用参数仅 EMA 前提（sma_fast/sma_slow）与止盈止损/仓位类；趋势过滤参数（macd_*/min_volatility_ratio/adx_*）为 trend 专属，range/breakout 不持有也不接受这些参数。
+> 全局共用为止盈止损/仓位类；趋势过滤参数（ema_*/macd_*/min_volatility_ratio/adx_*）为 trend 专属，range/breakout 不持有也不接受这些参数。
 
 各策略完整网格取值（`PARAM_GRID`）：
 
 | 策略 | 网格参数 → 取值 | 组合数 |
 |------|------------------|--------|
 | trend | 专属维度：`trail_atr_multiple` [1.4,1.6,1.8]；`momentum_period` [18,20,22]；`min_volatility_ratio` [0.008,0.025]；`max_risk_ratio` [0.02,0.025]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0]；`macd_fast` [10,12]；`macd_slow` [21,26]；`macd_signal` [7,9]；`adx_min` [20,25]；`max_loss_stop_ratio` [0.2,0.3]；+ PROTECTIONS_GRID ×8 | 55296 |
-| range | 专属维度：`trail_atr_multiple` [1.8,2.0,2.2]；`boll_period` [18,20,22]；`drop_ratio` [0.15,0.18,0.2]；`max_risk_ratio` [0.02,0.025]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0]；`max_loss_stop_ratio` [0.2,0.3]（无 macd/adx/vol 参数，因无趋势过滤）；+ PROTECTIONS_GRID ×8 | 5184 |
+| range | 专属维度：`trail_atr_multiple` [1.8,2.0,2.2]；`bb_period` [18,20,22]；`drop_ratio` [0.15,0.18,0.2]；`max_risk_ratio` [0.02,0.025]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0]；`max_loss_stop_ratio` [0.2,0.3]（无 macd/adx/vol 参数，因无趋势过滤）；+ PROTECTIONS_GRID ×8 | 5184 |
 | breakout | 专属维度：`trail_atr_multiple` [1.8,2.0,2.2]；`breakout_period` [15,20,30]；`max_risk_ratio` [0.02,0.025]；`trail_tighten_profit_multiple` [1.0,1.5,2.0]；`trail_tight_atr_multiple` [0.8,1.0]；`max_loss_stop_ratio` [0.2,0.3]；+ PROTECTIONS_GRID ×8 | 1728 |
 
-> **PROTECTIONS_GRID**（三策略共享，param_optimize.py 顶部常量）：`cooldown_bars` [None,5]；`stoploss_guard_trade_limit` [None,3]（lookback 60/pause 24 固定）；`max_drawdown_limit` [None,0.2]。二元开/关维度，让寻优按标的决定是否启用保护；None 组合经 CSV 往返被 extract_params 丢弃，不写 config（基类默认 None 生效）。
+> **PROTECTIONS_GRID**（三策略共享，param_optimize.py 顶部常量，参数名对齐 freqtrade）：`cooldown_period_candles` [None,5]；`stoploss_guard_trade_limit` [None,3]（lookback 60/stop_duration 24 固定）；`max_allowed_drawdown` [None,0.2]。二元开/关维度，让寻优按标的决定是否启用保护；None 组合经 CSV 往返被 extract_params 丢弃，不写 config（基类默认 None 生效）。
 >
 > 单只股票三策略合计 62208 个组合；仅保留 `profit_rate > 0` 的组合写入 CSV。
 
 **注意事项**：
 - **专属参数必须纳入网格**：`write_param_to_config.py` 只写网格产出的列，未进网格的参数（如曾遗漏的 `min_volatility_ratio`）会在写配置时丢失并静默回退类默认值。
 - **固定止盈已从网格移除**：`take_profit_atr_multiple` 默认 None（纯追踪止损为强制默认行为），如需寻优固定止盈需显式在网格加回正值维度。
-- `sma_fast`/`sma_slow`/`atr_period`/`macd_momentum_bars` 当前未纳入网格，按类默认值固定。
+- `ema_fast`/`ema_slow`/`atr_period`/`macd_momentum_bars` 当前未纳入网格，按类默认值固定。
 - 参数命名约定：追踪/止盈类倍数统一以 `*_atr_multiple` 结尾（不用缩写），追踪相关以 `trail_` 开头。
 
 ### opt_pipeline/out_sample_verify.py — 外样本校验（剔除训练集过拟合）
@@ -629,7 +640,7 @@ def rolling_slice(df, start_year=2020, train_years=4, test_years=1,
 | rolling_min_train_bars | 200 | 训练段最低 K 线数 |
 | rolling_min_test_bars | 100 | 测试段最低 K 线数（>60，不可低于 SMA60 minperiod） |
 
-**数据不足保护**：若某标的在所有 7 个滚动窗口中均不满足最低 K 线数（即 `rolling_slice` 返回空），跳过该标的并打印 `[ERROR]` 提示，附 4 条改进方法（前移 start_date、缩小 train/test_years、降低 min_bars 但不得低于 60、后移 start_year）。若全部标的被跳过、结果表为空，额外打印整体失败提示。
+**数据不足保护**：若某标的在所有 7 个滚动窗口中均不满足最低 K 线数（即 `rolling_slice` 返回空），跳过该标的并打印 `[ERROR]` 提示，附 4 条改进方法（前移 start_date、缩小 train/test_years、降低 rolling_min_*_bars 但不得低于 60、后移 start_year）。若全部标的被跳过、结果表为空，额外打印整体失败提示。
 
 **start_date 下限**（end_date=2026-09-21、默认滚动参数）：
 - 至少 1 个有效窗口（训练段 >200 根）：start_date ≤ 2024-03-04
@@ -655,8 +666,8 @@ class ManualTradeReview:
 ### A. 逻辑正确性
 
 1. **追踪止损只上不下（ratchet）**：`stop_price` 的所有写路径必须在 `BaseStrategy._update_trailing_stop` 内，且保留 `if candidate_stop > self.stop_price` 守卫；子类对 `stop_price` 只读，任何新出场逻辑不得直接下移止损。
-2. **入场过滤归策略自管**：基类不设方向性门控，`next()` 无仓时直接调 `populate_entry()`；策略专属过滤（如 trend 的 `_trend_filters_ok`）写在该策略文件内，不得上移到基类强加给所有策略（历史教训：四重过滤/EMA 前提做全局门控均损伤非趋势策略）。标的适配由 stock_filter 层负责，不靠策略内过滤补救。
-3. **出场比较符统一**：所有子类 `populate_exit` 对止损的比较统一用收盘价 `close[0] <= self.stop_price`（5 个策略均为 `<=`，含等于止损价的边界 K 线，边界明确不留歧义）。
+2. **入场过滤归策略自管**：基类不设方向性门控，`next()` 无仓时直接调 `populate_entry_trend()`；策略专属过滤（如 trend 的 `_trend_filters_ok`）写在该策略文件内，不得上移到基类强加给所有策略（历史教训：四重过滤/EMA 前提做全局门控均损伤非趋势策略）。标的适配由 stock_filter 层负责，不靠策略内过滤补救。
+3. **出场比较符统一**：所有子类 `populate_exit_trend` 对止损的比较统一用收盘价 `close[0] <= self.stop_price`（3 个策略均为 `<=`，含等于止损价的边界 K 线，边界明确不留歧义）。
 4. **收盘价确认口径**：止损/止盈触发统一用当根**收盘价**，不得在策略里改用盘中 `low`/`high`——盘中插针口径与收盘价口径同参数结果不可比（历史教训）。
 5. **ATR NaN 守卫**：任何新增使用 `self.atr[0]` 的计算必须防预热期 NaN（`math.isnan` 判空），否则 `int(nan)` 崩溃。
 6. **平仓状态完整重置**：`_close_position` 必须重置 `stop_price/take_price/entry_price/entry_bar/entry_atr_multiple`，避免下一笔仓位状态残留。
@@ -666,14 +677,14 @@ class ManualTradeReview:
 
 8. **命名约定**：倍数类参数全称 `*_atr_multiple`（禁止 mult 缩写），追踪类以 `trail_` 开头；新参数名要自解释（如浮盈门槛用 `trail_tighten_profit_multiple`）。
 9. **新参数三处同步**：策略 `params` → `DEFAULT_STRATEGY_PARAMS`（如需默认回退）→ `PARAM_GRID`（**必须进网格**，否则 `write_param_to_config` 不产出该列，config 静默回退类默认值）。
-10. **过滤参数归属**：公共风控/执行参数（atr_period/止损/止盈/摊低/Protections）定义在 BaseStrategy；方向性过滤参数（sma_*/macd_*/min_volatility_ratio/adx_*）属于 trend 专属，定义在 trend 子类，不上移基类；策略专属指标放子类 `populate_indicators`。
+10. **过滤参数归属**：公共风控/执行参数（atr_period/止损/止盈/摊低/Protections）定义在 BaseStrategy；方向性过滤参数（ema_*/macd_*/min_volatility_ratio/adx_*）属于 trend 专属，定义在 trend 子类，不上移基类；策略专属指标放子类 `populate_indicators`，命名对齐 freqtrade（macd/macdsignal/macdhist、adx/plus_di/minus_di、bb_*band）。
 11. **纯追踪止损默认**：`take_profit_atr_multiple` 默认 None，PARAM_GRID 不含固定止盈维度；加回固定止盈需显式评估（历史数据证明它截断盈利、盈亏比恶化）。
 12. **重命名时全量替换**：策略 id / 参数改名要同步 策略文件、`__init__.py`、`param_optimize.py`、`config.yaml`、AGENTS.md、spec.md（grep 旧名零残留），`output/*.csv` 旧产物下次跑流水线自动重建。
 
 ### C. 注册表与接口
 
 13. **注册表同步**：新增/改名策略更新 `STRATEGY_MAPPING`、`STRATEGY_DESCRIPTIONS`、`DEFAULT_STRATEGY_PARAMS` 及 `main.py` 的 `DEFAULT_STRATEGY`。
-14. **三钩子 + 日志接口**：子类实现 `populate_indicators/populate_entry/populate_exit`；`get_equity_dataframe/get_trade_dataframe/get_action_dataframe` 必须可用（main/daily_signal/manual_review 均依赖）。
+14. **三钩子 + 日志接口**：子类实现 `populate_indicators/populate_entry_trend/populate_exit_trend`；`get_equity_dataframe/get_trade_dataframe/get_action_dataframe` 必须可用（main/daily_signal/manual_review 均依赖）。
 15. **多进程可 pickle**：新增 worker/任务入参必须是普通可 pickle 对象，函数定义在模块顶层（spawn 要求）；不得把 Cerebro/迭代器传入子进程。
 16. **筛选层契约**：筛选阈值改 config.yaml `stock_filter` + stock_filter.py 的 DEFAULT_* 双处；`output/stock_filter.csv` 列名变更需同步全部消费方（main.py、daily_signal.py、param_optimize.py 的 load_regime_map/routed_strategies/strategy_for_code）；报告缺失必须安全降级（不剔除、不路由）。优化目标列（profit_rate/sharpe/calmar）变更时同步 COMBO/ROLLING 列常量与 aggregate 排序列。
 
@@ -689,7 +700,7 @@ class ManualTradeReview:
     - **IMPROVED**（仅净值正向、结构指标不变）：人工确认改进成立后才允许 `--update-golden`；
     - **CHANGED**（交易笔数/买卖次数/bars/参数签名变化）或 **DEGRADED**（净值下降）：必须解释或回退，**禁止直接更新 golden 掩盖退化**。
 19. **寻优路径**：改动参数后跑一次 `python opt_pipeline/param_optimize.py --stock-list 000725 --maxcpu 1`（WSL 正常环境可 --maxcpu 2 或 0；TRAE macOS 沙箱必须 `--maxcpu 1`），确认 regime 路由、CSV 新列名与多进程 spawn 路径正常；schema 变更时先删除旧阶段 CSV。
-20. **全流水线**：`python run_all.py --stock-list 000725`（行情→常驻 basic 筛选→该标的寻优 5 阶段闭环→自动路由回测→复盘）全部通过；修改默认行为后另跑一次 `python run_all.py`（默认回归标的集）确认默认目标集解析正确。
+20. **全流水线**：`python run_all.py --stock-list 000725`（行情→常驻 Pairlist Filters 筛选→该标的寻优 5 阶段闭环→自动路由回测→复盘）全部通过；修改默认行为后另跑一次 `python run_all.py`（默认回归标的集）确认默认目标集解析正确。
 21. **文档同步**：AGENTS.md（分层架构/参数表/策略表/网格表/本清单）与 spec.md 与代码一致。
 
 ### 回归基线说明（tests/regression/）

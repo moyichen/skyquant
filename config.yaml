@@ -18,13 +18,20 @@ opt_pipeline:
   rolling_min_test_bars: 100
   optimize_metric: profit_rate
 stock_filter:
-  basic:
-    min_bars: 120
-    max_zero_volume_ratio: 0.01
-    max_gap_days: 20
-    min_avg_amount_yi: 0.5
-    min_avg_turn: 0.2
-    min_mean_close: 1.0
+  # Pairlist Filters（概念对齐 freqtrade；turnover/liquidity 为 A 股扩展，无 freqtrade 对应内建过滤器）
+  pairlist:
+    age_filter:              # AgeFilter：窗口内最少交易日数（指标预热）
+      min_days_listed: 120
+    price_filter:            # PriceFilter：均价下限（剔除仙股/退市风险价区）
+      low_price: 1.0
+    volume_filter:           # VolumeFilter：日均成交额流动性下限
+      lookback_days: 0       #   0=全窗口评估；>0 仅看最近 N 个交易日
+      min_avg_amount_yi: 0.5
+    turnover_filter:         # A 股扩展：日均换手率下限（%）
+      min_avg_turn: 0.2
+    liquidity_filter:        # A 股扩展：零成交占比 / 最长停牌日历日缺口
+      max_zero_volume_ratio: 0.01
+      max_gap_days: 20
   trend:
     adx_period: 14
     min_adx_mean: 18.0
@@ -116,8 +123,8 @@ strategy_params:
       trail_tighten_profit_multiple: 2.0
       trail_tight_atr_multiple: 1.0
       max_loss_stop_ratio: 0.2
-      cooldown_bars: 5
-      max_drawdown_limit: 0.2
+      cooldown_period_candles: 5
+      max_allowed_drawdown: 0.2
   '000001':
     trend:
       trail_atr_multiple: 1.7
@@ -131,7 +138,7 @@ strategy_params:
     range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.6
-      boll_period: 18
+      bb_period: 18
       drop_ratio: 0.18
   '000651':
     trend:
@@ -141,7 +148,7 @@ strategy_params:
     range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.8
-      boll_period: 18
+      bb_period: 18
       drop_ratio: 0.18
   000792:
     trend:
@@ -176,7 +183,7 @@ strategy_params:
     range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.8
-      boll_period: 20
+      bb_period: 20
       drop_ratio: 0.18
   '600111':
     trend:
@@ -196,7 +203,7 @@ strategy_params:
     range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.5
-      boll_period: 18
+      bb_period: 18
       drop_ratio: 0.18
   '600900':
     trend:
@@ -216,7 +223,7 @@ strategy_params:
     range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.6
-      boll_period: 20
+      bb_period: 20
       drop_ratio: 0.18
   '601606':
     trend:
@@ -226,7 +233,7 @@ strategy_params:
     range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.5
-      boll_period: 22
+      bb_period: 22
       drop_ratio: 0.18
   '601899':
     trend:
@@ -236,7 +243,7 @@ strategy_params:
     range:
       max_risk_ratio: 0.02
       trail_atr_multiple: 1.5
-      boll_period: 18
+      bb_period: 18
       drop_ratio: 0.18
   '603173':
     trend:

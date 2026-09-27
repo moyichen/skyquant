@@ -1,7 +1,7 @@
 backtrader==1.9.78.123
 bokeh==3.10.0
-btplotting==0.2.2
 numpy==1.26.4
 pandas==2.3.3
+plotly>=5.24
 PyYAML==6.0.1
 tushare==1.4.29

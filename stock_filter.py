@@ -1,12 +1,18 @@
-# Stock pool pre-filter layer (sits between data_source and the strategies).
+# Stock pool pre-filter layer (sits between data_provider and the strategies).
 #
 # The strategy layer only owns signal rules; deciding WHICH stocks may enter
-# the pipeline is this layer's job. Three independent responsibilities:
+# the pipeline is this layer's job. Concepts are aligned with freqtrade
+# Pairlist Filters; A-share-specific extensions are marked as such. Three
+# independent responsibilities:
 #
-#   1. Basic quality filter (cache-only, always applied by run_all.py):
-#      data sufficiency, zero-volume bars, long suspension gaps, liquidity
-#      (average daily turnover amount / turnover rate), low-price floor,
-#      ST / delisting-risk name flags.
+#   1. Pairlist quality filters (cache-only, always applied by run_all.py):
+#      age_filter      ~ freqtrade AgeFilter     (min_days_listed / data sufficiency)
+#      price_filter    ~ freqtrade PriceFilter   (low_price floor)
+#      volume_filter   ~ freqtrade VolumeFilter  (average traded amount, lookback_days)
+#      turnover_filter ~ A-share extension       (average turnover rate)
+#      liquidity_filter ~ A-share extension      (zero-volume bars / long suspension gaps)
+#      plus an always-on name rule: ST / *ST / 退 names are rejected
+#      (custom filter; freqtrade has no built-in equivalent).
 #   2. Optional trendability filter (enabled with run_all.py --screen):
 #      ADX / EMA structure metrics, keeps only sustained-trend names for the
 #      trend strategy grid.
@@ -14,7 +20,7 @@
 #      trend / range / breakout labels are written to output/stock_filter.csv;
 #      param_optimize.py and main.py route each symbol to its matching strategy.
 #
-# All thresholds live in config.yaml -> stock_filter (basic/trend/regime groups).
+# All thresholds live in config.yaml -> stock_filter (pairlist/trend/regime groups).
 import argparse
 import os
 import sys
@@ -27,21 +33,38 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from comm import OUTPUT_DIR  # noqa: E402
-from data_source import DataSource  # noqa: E402
+from dataprovider import DataProvider  # noqa: E402
 from strategy import ACTIVE_STRATEGIES, STRATEGY_MAPPING  # noqa: E402
 
 FILTER_CSV = os.path.join(OUTPUT_DIR, "stock_filter.csv")
 
 # ===================== Default thresholds (overridable via config.yaml) =====================
-DEFAULT_BASIC = {
-    "min_bars": 120,              # minimum trading bars in the window (indicator warm-up)
-    "max_zero_volume_ratio": 0.01,  # max share of zero-volume bars
-    "max_gap_days": 20,           # max calendar-day gap between adjacent bars (long suspension)
-    "min_avg_amount_yi": 0.5,     # min average daily traded amount, in 100M CNY (yi)
-    "min_avg_turn": 0.2,          # min average daily turnover rate, in percent
-                                   # (kept permissive; mega-caps naturally have
-                                   # low turn, the amount floor is the main gate)
-    "min_mean_close": 1.0,        # min mean close price, CNY (exclude penny/delisting-risk names)
+# Pairlist Filters, aligned with freqtrade filter naming. A-share extensions:
+# turnover_filter and liquidity_filter have no freqtrade built-in equivalent.
+DEFAULT_PAIRLIST_FILTERS = {
+    # AgeFilter: minimum trading history available in the data window (indicator warm-up)
+    "age_filter": {
+        "min_days_listed": 120,       # min number of trading bars/days in the window
+    },
+    # PriceFilter: reject penny / delisting-risk price levels
+    "price_filter": {
+        "low_price": 1.0,             # min mean close price, CNY
+    },
+    # VolumeFilter: liquidity floor on average traded amount
+    "volume_filter": {
+        "lookback_days": 0,           # 0 = evaluate over the whole window; >0 = tail N trading days
+        "min_avg_amount_yi": 0.5,     # min average daily traded amount, in 100M CNY (yi)
+    },
+    # A-share extension: turnover-rate floor (kept permissive; mega-caps naturally
+    # have low turn, the amount floor in volume_filter is the main gate)
+    "turnover_filter": {
+        "min_avg_turn": 0.2,          # min average daily turnover rate, in percent
+    },
+    # A-share extension: tradeability continuity (zero-volume bars / long suspensions)
+    "liquidity_filter": {
+        "max_zero_volume_ratio": 0.01,  # max share of zero-volume bars
+        "max_gap_days": 20,             # max calendar-day gap between adjacent bars
+    },
 }
 
 DEFAULT_TREND = {
@@ -105,9 +128,13 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     return pd.DataFrame({"adx": adx, "plus_di": plus_di, "minus_di": minus_di}, index=df.index)
 
 
-# ===================== Basic quality metrics =====================
-def compute_basic_metrics(df: pd.DataFrame) -> dict:
-    """Data-quality / liquidity metrics for one symbol's cached OHLCV DataFrame."""
+# ===================== Pairlist quality metrics =====================
+def compute_pairlist_metrics(df: pd.DataFrame, volume_lookback: int = 0) -> dict:
+    """Data-quality / liquidity metrics for one symbol's cached OHLCV DataFrame.
+
+    volume_lookback > 0 evaluates the average traded amount over the tail N
+    trading days (freqtrade VolumeFilter lookback); 0 uses the whole window.
+    """
     if df is None or len(df) == 0:
         return None
     volume = df["volume"].astype(float)
@@ -121,7 +148,8 @@ def compute_basic_metrics(df: pd.DataFrame) -> dict:
     gap_days = dates.diff().dt.days.dropna()
     max_gap_days = int(gap_days.max()) if not gap_days.empty else 0
     # Tushare amount is in thousands of CNY; /1e5 converts to 100M (yi)
-    avg_amount_yi = float(amount.mean() / 100_000.0) if not amount.empty else 0.0
+    amount_window = amount.tail(volume_lookback) if volume_lookback and volume_lookback > 0 else amount
+    avg_amount_yi = float(amount_window.mean() / 100_000.0) if not amount_window.empty else 0.0
     avg_turn = float(turn.mean()) if not turn.empty else 0.0
 
     return {
@@ -134,27 +162,47 @@ def compute_basic_metrics(df: pd.DataFrame) -> dict:
     }
 
 
-def evaluate_basic(metrics: dict, name: str, thresholds: dict) -> tuple:
-    """Return (pass, fail_reason) for basic quality thresholds; ST is name-based."""
+def evaluate_pairlist_filters(metrics: dict, name: str, filters: dict) -> tuple:
+    """Return (pass, fail_reason) for the Pairlist Filters; ST name is a built-in rule.
+
+    filters is the merged {age_filter, price_filter, volume_filter,
+    turnover_filter, liquidity_filter} mapping.
+    """
     if metrics is None:
         return False, "insufficient_data"
+    age = filters.get("age_filter", {})
+    price = filters.get("price_filter", {})
+    volume = filters.get("volume_filter", {})
+    turnover = filters.get("turnover_filter", {})
+    liquidity = filters.get("liquidity_filter", {})
     fails = []
-    if metrics["bars"] < thresholds["min_bars"]:
-        fails.append(f"bars {metrics['bars']} < {thresholds['min_bars']}")
-    if metrics["zero_volume_ratio"] > thresholds["max_zero_volume_ratio"]:
-        fails.append(f"zero_vol {metrics['zero_volume_ratio']:.2%} > {thresholds['max_zero_volume_ratio']:.2%}")
-    if metrics["max_gap_days"] > thresholds["max_gap_days"]:
-        fails.append(f"gap {metrics['max_gap_days']}d > {thresholds['max_gap_days']}d")
-    if metrics["avg_amount_yi"] < thresholds["min_avg_amount_yi"]:
-        fails.append(f"amount {metrics['avg_amount_yi']:.2f}yi < {thresholds['min_avg_amount_yi']}yi")
-    if metrics["avg_turn"] < thresholds["min_avg_turn"]:
-        fails.append(f"turn {metrics['avg_turn']:.2f}% < {thresholds['min_avg_turn']}%")
-    if metrics["mean_close"] < thresholds["min_mean_close"]:
-        fails.append(f"price {metrics['mean_close']:.2f} < {thresholds['min_mean_close']}")
-    # ST / *ST / 退 marks in the config-maintained name
+    # AgeFilter
+    min_days = age.get("min_days_listed", 0)
+    if metrics["bars"] < min_days:
+        fails.append(f"[AgeFilter] bars {metrics['bars']} < min_days_listed {min_days}")
+    # liquidity extension: zero-volume / suspension continuity
+    max_zero_vol = liquidity.get("max_zero_volume_ratio", 1.0)
+    if metrics["zero_volume_ratio"] > max_zero_vol:
+        fails.append(f"[liquidity] zero_vol {metrics['zero_volume_ratio']:.2%} > {max_zero_vol:.2%}")
+    max_gap = liquidity.get("max_gap_days", float("inf"))
+    if metrics["max_gap_days"] > max_gap:
+        fails.append(f"[liquidity] gap {metrics['max_gap_days']}d > {max_gap}d")
+    # VolumeFilter
+    min_amount = volume.get("min_avg_amount_yi", 0.0)
+    if metrics["avg_amount_yi"] < min_amount:
+        fails.append(f"[VolumeFilter] amount {metrics['avg_amount_yi']:.2f}yi < {min_amount}yi")
+    # turnover extension
+    min_turn = turnover.get("min_avg_turn", 0.0)
+    if metrics["avg_turn"] < min_turn:
+        fails.append(f"[turnover] turn {metrics['avg_turn']:.2f}% < {min_turn}%")
+    # PriceFilter
+    low_price = price.get("low_price", 0.0)
+    if metrics["mean_close"] < low_price:
+        fails.append(f"[PriceFilter] mean_close {metrics['mean_close']:.2f} < low_price {low_price}")
+    # Built-in name rule: ST / *ST / 退 marks in the config-maintained name
     upper_name = (name or "").upper()
     if "ST" in upper_name or "退" in (name or ""):
-        fails.append(f"ST/delisting-risk name: {name}")
+        fails.append(f"[name] ST/delisting-risk name: {name}")
     return (len(fails) == 0), "; ".join(fails)
 
 
@@ -259,29 +307,39 @@ def classify_regime(metrics: dict, thresholds: dict = None) -> str:
 
 
 # ===================== Filter layer entry point =====================
-def filter_stock_pool(ds: DataSource, codes: list, filter_config: dict = None) -> pd.DataFrame:
-    """Run basic + trend filters and regime classification for every code.
+def _merge_pairlist_config(pairlist_cfg: dict) -> dict:
+    """Merge config.yaml stock_filter.pairlist onto the default filter groups."""
+    merged = {group: {**defaults} for group, defaults in DEFAULT_PAIRLIST_FILTERS.items()}
+    for group, values in (pairlist_cfg or {}).items():
+        if group in merged and isinstance(values, dict):
+            merged[group].update(values)
+    return merged
+
+
+def filter_stock_pool(data_provider: DataProvider, codes: list, filter_config: dict = None) -> pd.DataFrame:
+    """Run Pairlist Filters + trend filter and regime classification for every code.
 
     Reads cached data only (no API calls); stocks without cache are marked
     failed (run the data fetch first). Returns one row per symbol with:
-      basic_passed, passed (basic AND trend), regime, fail reasons, metrics.
+      pairlist_passed, passed (pairlist AND trend), regime, fail reasons, metrics.
     """
     filter_config = filter_config or {}
-    basic_cfg = {**DEFAULT_BASIC, **(filter_config.get("basic") or {})}
+    pairlist_cfg = _merge_pairlist_config(filter_config.get("pairlist"))
     trend_cfg = {**DEFAULT_TREND, **(filter_config.get("trend") or {})}
     regime_cfg = {**DEFAULT_REGIME, **(filter_config.get("regime") or {})}
+    volume_lookback = int(pairlist_cfg["volume_filter"].get("lookback_days", 0) or 0)
 
     rows = []
-    stock_names = {str(s["code"]): s.get("name", "") for s in ds.cfg.get("stock_list", [])}
+    stock_names = {str(s["code"]): s.get("name", "") for s in data_provider.cfg.get("stock_list", [])}
     for code in codes:
         code = str(code)
         name = stock_names.get(code, "")
-        df = ds.load_cached_data(code)
-        basic_metrics = compute_basic_metrics(df)
-        basic_passed, basic_reason = evaluate_basic(basic_metrics, name, basic_cfg)
+        df = data_provider.load_cached_data(code)
+        pairlist_metrics = compute_pairlist_metrics(df, volume_lookback=volume_lookback)
+        pairlist_passed, pairlist_reason = evaluate_pairlist_filters(pairlist_metrics, name, pairlist_cfg)
 
-        # Trend metrics need enough history; compute only when basic data exists
-        trend_metrics = compute_trend_metrics(df, adx_period=trend_cfg["adx_period"]) if basic_metrics else None
+        # Trend metrics need enough history; compute only when pairlist data exists
+        trend_metrics = compute_trend_metrics(df, adx_period=trend_cfg["adx_period"]) if pairlist_metrics else None
         trend_passed, trend_reason = evaluate_trend(trend_metrics, trend_cfg)
         regime = classify_regime(trend_metrics, regime_cfg)
 
@@ -289,13 +347,13 @@ def filter_stock_pool(ds: DataSource, codes: list, filter_config: dict = None) -
             "stock_code": code,
             "name": name,
             "regime": regime,
-            "basic_passed": basic_passed,
-            "passed": bool(basic_passed and trend_passed),
-            "basic_fail_reason": "" if basic_passed else basic_reason,
+            "pairlist_passed": pairlist_passed,
+            "passed": bool(pairlist_passed and trend_passed),
+            "pairlist_fail_reason": "" if pairlist_passed else pairlist_reason,
             "fail_reason": "" if trend_passed else trend_reason,
         }
-        if basic_metrics:
-            row.update(basic_metrics)
+        if pairlist_metrics:
+            row.update(pairlist_metrics)
         if trend_metrics:
             row.update(trend_metrics)
         rows.append(row)
@@ -349,7 +407,7 @@ def strategy_for_code(code: str, regime_map: dict, param_pool: dict = None, defa
 
 # ===================== CLI =====================
 def main():
-    parser = argparse.ArgumentParser(description="Stock pool pre-filter: basic quality + trendability + regime routing")
+    parser = argparse.ArgumentParser(description="Stock pool pre-filter: Pairlist Filters + trendability + regime routing")
     parser.add_argument(
         "--stock-list",
         type=str,
@@ -364,24 +422,24 @@ def main():
     )
     args = parser.parse_args()
 
-    ds = DataSource()
+    data_provider = DataProvider()
     if args.stock_list:
         codes = [c.strip() for c in args.stock_list.split(",") if c.strip()]
     else:
-        codes = [str(item["code"]) for item in ds.cfg.get("stock_list", [])]
+        codes = [str(item["code"]) for item in data_provider.cfg.get("stock_list", [])]
 
-    result = filter_stock_pool(ds, codes, ds.cfg.get("stock_filter", {}))
+    result = filter_stock_pool(data_provider, codes, data_provider.cfg.get("stock_filter", {}))
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     result.to_csv(args.output, index=False)
 
-    basic_failed = result[~result["basic_passed"]]
-    trend_failed = result[result["basic_passed"] & ~result["passed"]]
-    print(f"Filtered {len(result)} symbols: {len(result[result['basic_passed']])} passed basic filter, "
-          f"{len(result[result['passed']])} passed basic + trend filter")
-    if len(basic_failed) > 0:
-        print(f"\nBasic-filter rejected ({len(basic_failed)}):")
-        for _, r in basic_failed.iterrows():
-            print(f"  {r['stock_code']} {r['name']}: {r['basic_fail_reason']}")
+    pairlist_failed = result[~result["pairlist_passed"]]
+    trend_failed = result[result["pairlist_passed"] & ~result["passed"]]
+    print(f"Filtered {len(result)} symbols: {len(result[result['pairlist_passed']])} passed Pairlist Filters, "
+          f"{len(result[result['passed']])} passed Pairlist + trend filter")
+    if len(pairlist_failed) > 0:
+        print(f"\nPairlist-filter rejected ({len(pairlist_failed)}):")
+        for _, r in pairlist_failed.iterrows():
+            print(f"  {r['stock_code']} {r['name']}: {r['pairlist_fail_reason']}")
     if len(trend_failed) > 0:
         print(f"\nTrend-filter rejected ({len(trend_failed)}, use --screen in run_all.py to exclude):")
         for _, r in trend_failed.iterrows():

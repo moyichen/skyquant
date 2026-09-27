@@ -34,9 +34,9 @@ from strategy import ACTIVE_STRATEGIES
 # optimizer decides per stock whether to enable. None = off (extract_params drops NaN on CSV
 # round-trip, so None never reaches config; the base-class default None applies).
 PROTECTIONS_GRID = {
-    "cooldown_bars": [None, 5],           # CooldownPeriod: no re-entry for N bars after a sell fill
-    "stoploss_guard_trade_limit": [None, 3],  # StoplossGuard: pause after 3 stop-exits in lookback window
-    "max_drawdown_limit": [None, 0.2],    # MaxDrawdown: block entries while equity drawdown > 20%
+    "cooldown_period_candles": [None, 5],   # CooldownPeriod.stop_duration_candles: no re-entry for N candles after a sell fill
+    "stoploss_guard_trade_limit": [None, 3],  # StoplossGuard.trade_limit: pause after 3 stop-exits in lookback window
+    "max_allowed_drawdown": [None, 0.2],    # MaxDrawdown.max_allowed_drawdown: block entries while equity drawdown > 20%
 }
 
 PARAM_GRID = {
@@ -60,7 +60,7 @@ PARAM_GRID = {
         # Bypasses the trend filter, so macd_*/adx_min/min_volatility_ratio are excluded
         # (they do not affect entry for this strategy).
         "trail_atr_multiple": [1.8, 2.0, 2.2],
-        "boll_period": [18, 20, 22],
+        "bb_period": [18, 20, 22],
         "drop_ratio": [0.15, 0.18, 0.2],
         "max_risk_ratio": [0.02, 0.025],
         "trail_tighten_profit_multiple": [1.0, 1.5, 2.0],
@@ -109,14 +109,14 @@ def main():
     maxcpu = resolve_maxcpu(args.maxcpu)
 
     runner = BacktestRunner()
-    optimize_metric = resolve_optimize_metric(runner.ds.cfg)
+    optimize_metric = resolve_optimize_metric(runner.data_provider.cfg)
     sort_col = GRID_OBJECTIVE_COLUMN[optimize_metric]
-    valid_codes = resolve_target_codes(args, runner.ds.cfg)
+    valid_codes = resolve_target_codes(args, runner.data_provider.cfg)
     # Regime -> strategy routing table (output/stock_filter.csv); empty when the
     # filter layer has not run, in which case all active strategies are optimized.
     regime_map = load_regime_map()
     # Each symbol's cache is read only once; grid combinations reuse it directly
-    cache_map = {code: runner.ds.load_cached_data(code) for code in valid_codes}
+    cache_map = {code: runner.data_provider.load_cached_data(code) for code in valid_codes}
 
     result_rows = []
     for code in valid_codes:

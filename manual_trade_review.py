@@ -4,7 +4,7 @@ import backtrader as bt
 import pandas as pd
 
 from comm import OUTPUT_DIR, PROJECT_ROOT, apply_broker_settings, build_commission
-from data_source import AStockData, DataSource
+from dataprovider import AStockData, DataProvider
 from strategy import DEFAULT_STRATEGY_PARAMS, STRATEGY_MAPPING
 
 REQUIRED_COLS = ["trade_date", "stock_code", "side"]
@@ -12,8 +12,8 @@ REQUIRED_COLS = ["trade_date", "stock_code", "side"]
 
 class ManualTradeReview:
     def __init__(self, config_path="config.yaml", trade_csv=None, stock_list=None):
-        self.ds = DataSource(config_path=config_path)
-        self.cfg = self.ds.cfg
+        self.data_provider = DataProvider(config_path=config_path)
+        self.cfg = self.data_provider.cfg
         if trade_csv is None:
             trade_csv = str(PROJECT_ROOT / "manual_trades.csv")
         # dtype=str to prevent loss of leading zeros in stock codes (000725 -> 725)
@@ -35,10 +35,10 @@ class ManualTradeReview:
 
     def get_strategy_signal(self, code, strategy_id, param):
         """Run a single strategy on a single symbol, extract daily buy/sell signals via the unified trade record interface"""
-        df = self.ds.load_cached_data(code)
+        df = self.data_provider.load_cached_data(code)
         if df is None or len(df) == 0:
             # Fallback to incremental fetching when no cache exists (with local cache acceleration)
-            df = self.ds.fetch_stock(code, force_refresh=False)
+            df = self.data_provider.fetch_stock(code, force_refresh=False)
         if df is None or len(df) == 0:
             return None
         cerebro = bt.Cerebro()

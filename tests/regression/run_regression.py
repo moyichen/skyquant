@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from comm import AStockCommission  # noqa: E402
-from data_source import AStockData, DataSource  # noqa: E402
+from dataprovider import AStockData, DataProvider  # noqa: E402
 from strategy import DEFAULT_STRATEGY_PARAMS, STRATEGY_MAPPING  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "opt_pipeline"))
@@ -50,9 +50,9 @@ def load_runtime_config():
     return cfg["global_setting"], cfg["commission_config"]
 
 
-def load_window_data(ds, code, global_setting):
+def load_window_data(data_provider, code, global_setting):
     """Load cached data only, clipped to the fixed config date window."""
-    df = ds.load_cached_data(code)
+    df = data_provider.load_cached_data(code)
     if df is None:
         return None
     start_dt = pd.Timestamp(str(global_setting.get("start_date", "1900-01-01")))
@@ -61,9 +61,9 @@ def load_window_data(ds, code, global_setting):
     return df.reset_index(drop=True)
 
 
-def run_case(ds, comminfo, global_setting, code, strategy_id):
+def run_case(data_provider, comminfo, global_setting, code, strategy_id):
     """Run one stock/strategy backtest with class-default params; return metrics dict."""
-    df = load_window_data(ds, code, global_setting)
+    df = load_window_data(data_provider, code, global_setting)
     if df is None or df.empty:
         return None
     params = dict(DEFAULT_STRATEGY_PARAMS[strategy_id])
@@ -114,7 +114,7 @@ def case_key(code, strategy_id):
 def run_all_cases(stock_list):
     """Execute all stock x strategy cases; return {case_key: metrics}."""
     global_setting, comm_cfg = load_runtime_config()
-    ds = DataSource()
+    data_provider = DataProvider()
     comminfo = AStockCommission(
         commission=comm_cfg["commission"],
         stamp_duty=comm_cfg["stamp_duty"],
@@ -125,7 +125,7 @@ def run_all_cases(stock_list):
         for strategy_id in STRATEGY_MAPPING:
             key = case_key(code, strategy_id)
             print("Running {} ...".format(key))
-            metrics = run_case(ds, comminfo, global_setting, code, strategy_id)
+            metrics = run_case(data_provider, comminfo, global_setting, code, strategy_id)
             if metrics is None:
                 print("  [WARN] no cached data in window, skipped")
                 continue

@@ -54,7 +54,7 @@ class AStockData(bt.feeds.PandasData):
     )
 
 
-class DataSource:
+class DataProvider:
     """
     A-share market data source: encapsulates config loading, Tushare interface,
     local caching, incremental update, and field formatting.

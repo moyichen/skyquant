@@ -10,19 +10,19 @@ STRATEGY_MAPPING = {
 }
 
 # Short human-readable description per strategy id; surfaced in `main.py --help`.
-# All strategies share the EMA bullish precondition, ATR trailing stop / dynamic
-# take-profit / max-loss floor / average-down logic in BaseStrategy. The difference
-# is the entry signal; trend additionally requires its own MACD/volatility/ADX filter.
+# All strategies share ATR trailing stop / dynamic take-profit / max-loss floor /
+# average-down logic in BaseStrategy (no directional gate). The difference is the
+# entry signal; trend additionally requires its own EMA/MACD/volatility/ADX filter.
 STRATEGY_DESCRIPTIONS = {
-    "trend": "Trend (trend_follow + momentum merged): enter when EMA bullish precondition AND MACD/volatility/ADX trend filter pass AND Momentum > 0; exit on ATR chandelier trailing stop or momentum reversal.",
-    "range": "Range/mean-reversion (boll_ma + short_reversal merged): enter on close <= Bollinger lower band OR daily drop > drop_ratio (oversold bounce); exit on trailing stop or close > Bollinger upper band. Only requires the EMA bullish precondition.",
-    "breakout": "Breakout (Donchian channel): enter when close > highest high of breakout_period days; exit on trailing stop or close < lowest low. Only requires the EMA bullish precondition (for high-volatility names where price breaks out before ADX confirms).",
+    "trend": "Trend (trend_follow + momentum merged): enter when EMA bull alignment, MACD/volatility/ADX trend filters pass AND Momentum > 0; exit on ATR chandelier trailing stop or momentum reversal.",
+    "range": "Range/mean-reversion (boll_ma + short_reversal merged): enter on close <= bb_lowerband OR daily drop > drop_ratio (oversold bounce); exit on trailing stop or close > bb_upperband. No trend gate.",
+    "breakout": "Breakout (Donchian channel): enter when close > donchian_upper of breakout_period candles; exit on trailing stop or close < donchian_lower. No trend gate (for high-volatility names where price breaks out before ADX confirms).",
 }
 
 # Default strategy parameters, used as fallback when a stock has no optimized config
 DEFAULT_STRATEGY_PARAMS = {
     "trend": {"trail_atr_multiple": 1.6, "momentum_period": 20, "max_risk_ratio": 0.02},
-    "range": {"trail_atr_multiple": 2.0, "boll_period": 20, "drop_ratio": 0.18, "max_risk_ratio": 0.02},
+    "range": {"trail_atr_multiple": 2.0, "bb_period": 20, "drop_ratio": 0.18, "max_risk_ratio": 0.02},
     "breakout": {"trail_atr_multiple": 2.0, "breakout_period": 20, "max_risk_ratio": 0.02},
 }
 

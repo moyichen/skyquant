@@ -20,7 +20,7 @@ from comm import (
     build_commission,
     setup_logging,
 )
-from data_source import AStockData, DataSource
+from dataprovider import AStockData, DataProvider
 from strategy import DEFAULT_STRATEGY_PARAMS, STRATEGY_MAPPING, filter_active_strategies
 
 TRADE_CSV = PROJECT_ROOT / "manual_trades.csv"
@@ -63,7 +63,7 @@ def compute_holdings(trade_csv: Path) -> dict[str, dict]:
 
 
 def run_strategy_actions(
-    ds: DataSource,
+    data_provider: DataProvider,
     comminfo: AStockCommission,
     cfg: dict,
     code: str,
@@ -71,9 +71,9 @@ def run_strategy_actions(
     param: dict,
 ) -> pd.DataFrame | None:
     """Run a single strategy on a single symbol and return the action log DataFrame."""
-    df = ds.load_cached_data(code)
+    df = data_provider.load_cached_data(code)
     if df is None or len(df) == 0:
-        df = ds.fetch_stock(code, force_refresh=False)
+        df = data_provider.fetch_stock(code, force_refresh=False)
     if df is None or len(df) == 0:
         return None
     cerebro = bt.Cerebro()
@@ -157,7 +157,7 @@ def derive_suggested_action(consensus: str, currently_held: bool) -> str:
 
 
 def build_report_rows(
-    ds: DataSource,
+    data_provider: DataProvider,
     comminfo: AStockCommission,
     cfg: dict,
     param_pool: dict,
@@ -172,7 +172,7 @@ def build_report_rows(
         code = str(stock_info["code"])
         name = stock_info.get("name", code)
         # Fetch latest data
-        df = ds.fetch_stock(code, force_refresh=False)
+        df = data_provider.fetch_stock(code, force_refresh=False)
         if df is None or len(df) == 0:
             logger.warning(f"No data for {code} ({name}), skipping")
             continue
@@ -182,7 +182,7 @@ def build_report_rows(
         strategy_actions: list[str] = []
         for strategy_id, param in param_pool[code].items():
             try:
-                action_df = run_strategy_actions(ds, comminfo, cfg, code, strategy_id, param)
+                action_df = run_strategy_actions(data_provider, comminfo, cfg, code, strategy_id, param)
             except Exception as e:
                 logger.error(f"Strategy {strategy_id} failed for {code}: {e}")
                 action_df = None
@@ -293,10 +293,10 @@ def main():
     setup_logging()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    ds = DataSource()
+    data_provider = DataProvider()
     # Override end_date to today so incremental fetch covers the latest bar
-    ds.end_date = datetime.date.today().strftime("%Y%m%d")
-    cfg = ds.cfg
+    data_provider.end_date = datetime.date.today().strftime("%Y%m%d")
+    cfg = data_provider.cfg
 
     # Filter stock list if --stock-list is provided
     stock_list = cfg["stock_list"]
@@ -317,18 +317,18 @@ def main():
     from stock_filter import FILTER_CSV, load_regime_map, routed_strategies
 
     regime_map = load_regime_map()
-    basic_pass: dict[str, bool] = {}
+    pairlist_pass: dict = {}
     if Path(FILTER_CSV).exists():
         filter_df = pd.read_csv(FILTER_CSV, dtype={"stock_code": str})
-        basic_pass = dict(zip(filter_df["stock_code"], filter_df["basic_passed"].astype(bool)))
+        pairlist_pass = dict(zip(filter_df["stock_code"], filter_df["pairlist_passed"].astype(bool)))
 
     param_pool = {}
     routed_stock_list = []
     for s in stock_list:
         code = str(s["code"])
-        # Symbols failing the basic quality gate (suspended/illiquid/ST) are skipped
-        if not basic_pass.get(code, True):
-            logger.info(f"Skip {code}: rejected by stock_filter basic gate")
+        # Symbols failing the Pairlist Filters gate (suspended/illiquid/ST) are skipped
+        if not pairlist_pass.get(code, True):
+            logger.info(f"Skip {code}: rejected by stock_filter Pairlist Filters gate")
             continue
         active_params = filter_active_strategies(optimized_params.get(code, DEFAULT_STRATEGY_PARAMS))
         routed_ids = routed_strategies(code, regime_map, list(active_params.keys()))
@@ -342,7 +342,7 @@ def main():
 
     report_date = datetime.date.today().strftime("%Y%m%d")
 
-    rows = build_report_rows(ds, comminfo, cfg, param_pool, stock_name_map, holdings, report_date, stock_list)
+    rows = build_report_rows(data_provider, comminfo, cfg, param_pool, stock_name_map, holdings, report_date, stock_list)
 
     if not rows:
         logger.warning("No signal rows generated")

@@ -22,7 +22,7 @@
       "n_trades": 11,
       "n_wins": 7,
       "params": {
-        "boll_period": 20,
+        "bb_period": 20,
         "drop_ratio": 0.18,
         "max_risk_ratio": 0.02,
         "trail_atr_multiple": 2.0
@@ -51,6 +51,6 @@
     "stocks": [
       "000725"
     ],
-    "updated_at": "2026-09-27 06:03:38"
+    "updated_at": "2026-09-27 11:25:57"
   }
 }

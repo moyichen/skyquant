@@ -4,6 +4,7 @@ import itertools
 import multiprocessing
 import os
 import sys
+from typing import Optional
 
 # When run as a script (python3 param_optimize.py), sys.path[0] is this directory,
 # so the project root must be added manually. All stage scripts bootstrap from this
@@ -16,7 +17,7 @@ import backtrader as bt
 import pandas as pd
 
 from comm import AStockCommission
-from data_source import AStockData, DataSource
+from dataprovider import AStockData, DataProvider
 from report import calc_equity_metrics
 from stock_filter import FILTER_CSV, load_regime_map, routed_strategies  # noqa: F401  (re-exported for stage scripts)
 from strategy import ACTIVE_STRATEGIES, STRATEGY_MAPPING  # noqa: F401  (ACTIVE_STRATEGIES re-exported)
@@ -219,9 +220,9 @@ class BacktestRunner:
     """Standard backtest executor: unifies initial capital, A-share commission, and feed
     construction, reused by grid/out-of-sample/rolling verification."""
 
-    def __init__(self, data_source: DataSource | None = None):
-        self.ds = data_source or DataSource()
-        cfg = self.ds.cfg
+    def __init__(self, data_provider: Optional[DataProvider] = None):
+        self.data_provider = data_provider or DataProvider()
+        cfg = self.data_provider.cfg
         self.initial_capital = cfg["global_setting"]["initial_capital"]
         comm_cfg = cfg["commission_config"]
         # Plain dict so it can be passed to pool workers (AStockCommission is

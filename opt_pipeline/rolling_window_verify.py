@@ -97,14 +97,14 @@ def main():
     maxcpu = resolve_maxcpu(args.maxcpu)
 
     runner = BacktestRunner()
-    cfg = runner.ds.cfg.get("opt_pipeline", {})
+    cfg = runner.data_provider.cfg.get("opt_pipeline", {})
     start_year = int(cfg.get("rolling_start_year", 2020))
     train_years = int(cfg.get("rolling_train_years", 4))
     test_years = int(cfg.get("rolling_test_years", 1))
     min_train_bars = int(cfg.get("rolling_min_train_bars", 200))
     min_test_bars = int(cfg.get("rolling_min_test_bars", 100))
-    start_date = runner.ds.start_date
-    end_date = runner.ds.end_date
+    start_date = runner.data_provider.start_date
+    end_date = runner.data_provider.end_date
 
     df_input = read_stage_csv(OUT_SAMPLE_CSV)
     if args.stock_list:
@@ -118,7 +118,7 @@ def main():
     # them once and dispatch all (strategy, params) jobs x windows to one Pool.
     for code in df_input["stock_code"].astype(str).unique():
         group = df_input[df_input["stock_code"].astype(str) == code]
-        full_df = runner.ds.load_cached_data(code)
+        full_df = runner.data_provider.load_cached_data(code)
         if full_df is None or full_df.empty:
             print(f"Symbol {code} has no cached data, skipping")
             skipped_any = True

@@ -19,7 +19,7 @@ from comm import CACHE_DIR, LOG_FILE, OUTPUT_DIR, PLOT_DIR, PROJECT_ROOT, setup_
 OPT_DIR = PROJECT_ROOT / "opt_pipeline"
 sys.path.insert(0, str(OPT_DIR))
 from common import resolve_target_codes  # noqa: E402
-from data_source import DataSource  # noqa: E402
+from dataprovider import DataProvider  # noqa: E402
 from stock_filter import FILTER_CSV, filter_stock_pool  # noqa: E402
 
 setup_logging(LOG_FILE)
@@ -95,23 +95,24 @@ def main():
         logger.info("--skip-data enabled, skipping market data fetch, using local cache")
 
     # ---- Step 2: stock pool pre-filter layer ----
-    # Always runs (cache-only): basic quality gate (suspension/liquidity/price/ST)
-    # plus regime classification; output/stock_filter.csv drives strategy routing
-    # in param_optimize.py and main.py. --screen additionally enforces trendability.
-    filter_df = filter_stock_pool(DataSource(), target_codes, cfg.get("stock_filter", {}))
+    # Always runs (cache-only): Pairlist Filters gate (age/price/volume/turnover/
+    # liquidity/name, aligned with freqtrade) plus regime classification;
+    # output/stock_filter.csv drives strategy routing in param_optimize.py and
+    # main.py. --screen additionally enforces trendability.
+    filter_df = filter_stock_pool(DataProvider(), target_codes, cfg.get("stock_filter", {}))
     filter_df.to_csv(FILTER_CSV, index=False)
 
-    basic_failed = filter_df[~filter_df["basic_passed"]]
-    if len(basic_failed) > 0:
-        logger.info(f"Basic filter rejected {len(basic_failed)} symbols:")
-        for _, row in basic_failed.iterrows():
-            logger.info(f"  {row['stock_code']} {row['name']}: {row['basic_fail_reason']}")
-    surviving = filter_df[filter_df["basic_passed"]]
+    pairlist_failed = filter_df[~filter_df["pairlist_passed"]]
+    if len(pairlist_failed) > 0:
+        logger.info(f"Pairlist Filters rejected {len(pairlist_failed)} symbols:")
+        for _, row in pairlist_failed.iterrows():
+            logger.info(f"  {row['stock_code']} {row['name']}: {row['pairlist_fail_reason']}")
+    surviving = filter_df[filter_df["pairlist_passed"]]
 
     if args.screen:
         passed = surviving[surviving["passed"]]
         trend_failed = surviving[~surviving["passed"]]
-        logger.info(f"Trendability screening: {len(passed)}/{len(target_codes)} symbols passed basic + trend")
+        logger.info(f"Trendability screening: {len(passed)}/{len(target_codes)} symbols passed pairlist + trend")
         for _, row in trend_failed.iterrows():
             logger.info(f"  trend-rejected {row['stock_code']} {row['name']}: {row['fail_reason']}")
         target_codes = passed["stock_code"].astype(str).tolist()
@@ -121,7 +122,7 @@ def main():
     else:
         target_codes = surviving["stock_code"].astype(str).tolist()
         if not target_codes:
-            logger.error("No symbols passed the basic filter; aborting.")
+            logger.error("No symbols passed the Pairlist Filters; aborting.")
             sys.exit(1)
 
     logger.info("Regime routing:")

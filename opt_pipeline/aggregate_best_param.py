@@ -11,7 +11,7 @@ from common import (
     OPTIMIZE_OBJECTIVE_COLUMN,
     ROLLING_CSV,
     ROLLING_METRIC_COLS,
-    DataSource,
+    DataProvider,
     extract_params,
     parse_code_list,
     read_stage_csv,
@@ -35,7 +35,7 @@ def main():
     )
     args = parser.parse_args()
 
-    optimize_metric = resolve_optimize_metric(DataSource().cfg)
+    optimize_metric = resolve_optimize_metric(DataProvider().cfg)
     rank_col = OPTIMIZE_OBJECTIVE_COLUMN[optimize_metric]
 
     df = read_stage_csv(ROLLING_CSV)

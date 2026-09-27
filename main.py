@@ -19,8 +19,8 @@ from comm import (
     build_commission,
     setup_logging,
 )
-from data_source import AStockData, DataSource
-from report import calc_metrics, render_interactive_chart, render_report
+from dataprovider import AStockData, DataProvider
+from report import build_console_summary, calc_metrics, render_interactive_chart, render_report
 from strategy import STRATEGY_DESCRIPTIONS, STRATEGY_MAPPING
 
 # ========== Paths (anchored to project root, independent of CWD) ==========
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 def prepare_output_dirs():
-    """Create output directories (cache dir is handled by DataSource)."""
+    """Create output directories (cache dir is handled by DataProvider)."""
     for d in (OUTPUT_DIR, EQUITY_DIR, PLOT_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -55,10 +55,10 @@ def get_strategy_param(param_pool, code, strategy_id):
     return strategy_cls, params
 
 
-def run_backtest(dataSource, comminfo, cfg, param_pool, code, strategy_id, force_refresh, stock_name=None):
+def run_backtest(data_provider, comminfo, cfg, param_pool, code, strategy_id, force_refresh, stock_name=None):
     """Run one backtest for a single stock/strategy; return metrics dict or None."""
     global_setting = cfg["global_setting"]
-    df_data = dataSource.fetch_stock(code, force_refresh)
+    df_data = data_provider.fetch_stock(code, force_refresh)
     if df_data is None:
         logger.warning(f"Failed to fetch market data for {code}, skipping")
         return None
@@ -99,7 +99,7 @@ def run_backtest(dataSource, comminfo, cfg, param_pool, code, strategy_id, force
     equity_path = EQUITY_DIR / f"{code}_{strategy_id}_equity.csv"
     equity_df.to_csv(equity_path, index=False, encoding="utf-8")
 
-    metrics = calc_metrics(equity_df, trades_df)
+    metrics = calc_metrics(equity_df, trades_df, price_series=df_data["close"])
     metrics["stock_code"] = code
     metrics["strategy"] = strategy_id
 
@@ -114,10 +114,10 @@ def run_backtest(dataSource, comminfo, cfg, param_pool, code, strategy_id, force
         except Exception as e:
             logger.warning(f"Analyzer {name} for {code} failed: {e}")
 
-    # Render btplotting K-line chart (best-effort; optional dependency)
+    # Render freqtrade-style Plotly K-line chart (best-effort; optional dependency)
     interactive_html = None
     try:
-        interactive_html = render_interactive_chart(strategy_instance, PLOT_DIR, code, strategy_id)
+        interactive_html = render_interactive_chart(strategy_instance, PLOT_DIR, code, strategy_id, df_data, trades_df, stock_name=stock_name)
         logger.info(f"Interactive chart saved to {interactive_html}")
     except Exception as e:
         logger.warning(f"Interactive chart unavailable for {code}: {e}")
@@ -143,7 +143,8 @@ def run_backtest(dataSource, comminfo, cfg, param_pool, code, strategy_id, force
     logger.info(f"HTML report saved to {report_path}")
 
     logger.info(f"{code} {strategy_id} final portfolio value: {final_value:.2f}")
-    logger.info(f"Metrics: {metrics}")
+    for line in build_console_summary(metrics, trades_df).splitlines():
+        logger.info(line)
     return metrics
 
 
@@ -178,8 +179,8 @@ def main():
     prepare_output_dirs()
 
     # Load config and build runtime dependencies
-    ds = DataSource()
-    cfg = ds.cfg
+    data_provider = DataProvider()
+    cfg = data_provider.cfg
     stock_list = cfg["stock_list"]
     if args.stock_list:
         wanted = {c.strip() for c in args.stock_list.split(",") if c.strip()}
@@ -212,7 +213,7 @@ def main():
         strategy_id = args.strategy or strategy_for_code(code, regime_map, param_pool, DEFAULT_STRATEGY)
         logger.info(f"==== Backtesting {name}({code}) strategy={strategy_id} ====")
         metrics = run_backtest(
-            ds,
+            data_provider,
             comminfo,
             cfg,
             param_pool,

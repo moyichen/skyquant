@@ -63,11 +63,11 @@ def main():
     maxcpu = resolve_maxcpu(args.maxcpu)
 
     runner = BacktestRunner()
-    cfg = runner.ds.cfg.get("opt_pipeline", {})
+    cfg = runner.data_provider.cfg.get("opt_pipeline", {})
     train_end = cfg.get("out_sample_train_end", "2024-12-31")
     overfit_threshold = float(cfg.get("out_sample_overfit_threshold", 0.15))
-    start_date = runner.ds.start_date
-    end_date = runner.ds.end_date
+    start_date = runner.data_provider.start_date
+    end_date = runner.data_provider.end_date
 
     grid_df = read_stage_csv(PARAM_GRID_CSV)
     if args.stock_list:
@@ -83,7 +83,7 @@ def main():
     # and split once, then dispatch all (strategy, params) jobs to one Pool.
     for code in grid_df["stock_code"].astype(str).unique():
         group = grid_df[grid_df["stock_code"].astype(str) == code]
-        cache_df = runner.ds.load_cached_data(code)
+        cache_df = runner.data_provider.load_cached_data(code)
         if cache_df is None or cache_df.empty:
             print(f"Symbol {code} has no cached data, skipping")
             skipped_any = True
