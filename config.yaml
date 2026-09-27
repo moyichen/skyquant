@@ -115,6 +115,7 @@ stock_list:
   sector: 电子
   sector_index: 930652.CSI
   sector_index_name: CS电子
+  regime: breakout
 - code: '600809'
   name: 山西汾酒
   sector: 白酒
@@ -244,6 +245,13 @@ strategy_params:
       trail_atr_multiple: 1.4
       max_risk_ratio: 0.025
       momentum_period: 18
+    breakout:
+      trail_atr_multiple: 1.8
+      breakout_period: 20
+      max_risk_ratio: 0.025
+      trail_tighten_profit_multiple: 1.5
+      trail_tight_atr_multiple: 0.8
+      max_loss_stop_ratio: 0.2
   '002466':
     trend:
       trail_atr_multiple: 1.4
@@ -358,4 +366,4 @@ strategy_params:
       max_risk_ratio: 0.025
       trail_tighten_profit_multiple: 2.0
       trail_tight_atr_multiple: 0.8
-      max_loss_stop_ratio: 0.2
+      max_loss_stop_ratio: 0.3
