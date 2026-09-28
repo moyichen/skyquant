@@ -415,8 +415,8 @@ def routed_strategies(code: str, regime_map: dict, active_strategies: list = Non
 def strategy_for_code(code: str, regime_map: dict, param_pool: dict = None, default: str = "trend") -> str:
     """Pick the single strategy to backtest for one symbol (main.py auto-route).
 
-    Priority: regime label -> first strategy already configured in config.yaml
-    strategy_params -> default strategy.
+    Priority: regime label -> first strategy already configured in the active
+    param set (params/active.yaml) -> default strategy.
     """
     regime = regime_map.get(str(code))
     if regime and regime in STRATEGY_MAPPING:

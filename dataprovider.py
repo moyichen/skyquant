@@ -81,12 +81,15 @@ class DataProvider:
         config_path: Optional[str] = None,
         cache_root: Optional[str] = None,
         credentials_path: Optional[str] = None,
+        params_path: Optional[str] = None,
     ):
         self.src_dir = os.path.dirname(os.path.abspath(__file__))
 
         # Config file path
         self.config_path = config_path or os.path.join(self.src_dir, "config.yaml")
         self.config_path = os.path.normpath(self.config_path)
+        # 参数集覆盖文件（None = params/active.yaml；对标 freqtrade 第二个 --config）
+        self.params_path = params_path
 
         # Credentials file path (default ~/.skyquant/tushare.yaml)
         self.credentials_path = credentials_path or DEFAULT_CREDENTIALS_PATH
@@ -107,11 +110,12 @@ class DataProvider:
 
     # ---------------- Config ----------------
     def load_config(self) -> dict:
-        """Load and return the full config.yaml"""
+        """加载运行时配置 = config.yaml 固定配置 + 参数集（默认 params/active.yaml）。"""
         if not os.path.isfile(self.config_path):
             raise FileNotFoundError(f"Config file not found! Expected path: {self.config_path}")
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
+        from config_store import load_config
+
+        return load_config(self.config_path, self.params_path)
 
     def _load_token(self) -> str:
         """Load Tushare token from the user's private credentials file"""

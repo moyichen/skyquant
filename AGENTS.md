@@ -12,13 +12,13 @@ SkyQuant 是一套 A 股日线量化策略回测流水线，支持全自动参�
 
 | 层 | 文件 | 职责 |
 |----|------|------|
-| 1. 配置层 | config.yaml | 全部可配置项外置：资金/区间/滑点、黑白名单、费率、筛选阈值、策略参数、寻优目标（profit_rate/sharpe/calmar） |
+| 1. 配置层 | config.yaml + config_store.py + params/ | 固定配置 config.yaml：资金/区间/滑点、黑白名单、费率、筛选阈值、股票池、寻优目标；高频变动的策略参数独立为参数集 params/active.yaml（生效）· drafts/（手工草稿）· experiments/（opt 归档），由 config_store.py 统一加载（freqtrade 多 config 风格，backtest/live 可用 `--params` 临时覆盖） |
 | 2. 数据层 | dataprovider.py | Tushare 拉取/增量更新/CSV 缓存/标准化 DataFrame；板块指数行情 fetch_index（index_daily，缓存 cache/index_cache/）；无任何交易逻辑（`DataProvider` 类） |
 | 3. 股票池筛选层 | stock_filter.py | Pairlist Filters 质量门（age/price/volume/turnover/liquidity/name，常驻）+ trend 趋势门（--screen）+ regime 分类路由；策略外部选股 |
 | 4. 策略插件层 | strategy/*.py | 每个策略一个文件，继承统一 BaseStrategy，只做指标与买卖信号；注册到 STRATEGY_MAPPING 即插拔 |
 | 5. 回测引擎层 | main.py | 封装 Cerebro：数据/手续费/滑点/Analyzer，默认按 regime 自动路由策略，遍历标的收集结果 |
 | 6. 指标报表层 | report.py | calc_metrics 指标计算 + 自包含 HTML 报告（Strategy Summary 展示 regime/板块，「板块指数」区块：最新点位/窗口涨跌/近20日/相对强弱）+ Plotly freqtrade 风格 K 线交互图（板块指数收盘线副轴叠加）；统一输出标准 |
-| 7. 参数寻优层 | opt_pipeline/*.py | 网格→外样本→滚动→聚合→写配置；多指标 dict 贯穿 worker/CSV，回测与寻优复用同一套策略代码 |
+| 7. 参数寻优层 | opt_pipeline/*.py | 网格→外样本→滚动→聚合→归档 experiments 并合并 active 参数集；多指标 dict 贯穿 worker/CSV，回测与寻优复用同一套策略代码 |
 | 8. 一键入口 | skyquant.py | 数据→筛选→按标的寻优闭环→批量回测→复盘；统一日志 output/run.log |
 | 9. 公共工具层 | comm.py | 手续费、路径常量单一来源、setup_logging、apply_blacklist、build_commission、apply_broker_settings |
 
@@ -50,7 +50,7 @@ SkyQuant 是一套 A 股日线量化策略回测流水线，支持全自动参�
 ## 运行方式
 
 ```bash
-# 寻优流水线（默认只跑回归标的：行情拉取→股票池前置筛选→按标的循环 寻优→校验→聚合→写配置→最后批量回测→复盘）
+# 寻优流水线（默认只跑回归标的：行情拉取→股票池前置筛选→按标的循环 寻优→校验→聚合→归档/生效参数集→最后批量回测→复盘）
 python3 skyquant.py all
 python3 skyquant.py all --all-stocks         # 手动触发全量标的池
 python3 skyquant.py all --skip-data          # 缓存加速模式
@@ -70,6 +70,13 @@ python live_trading.py --stock-list 000725,601633  # 仅复盘指定持仓
 # 单次回测（不传 --strategy 时按 stock_filter.csv 的 regime 自动路由）
 python main.py --strategy trend
 python main.py --stock-list 000725 --strategy trend  # 仅回测指定股票
+python main.py --stock-list 000725 --params params/experiments/xxxx_profit_rate.yaml  # 临时用历史参数组，不改 active
+
+# 参数集管理（生效集 / 草稿 / opt 归档）
+python3 skyquant.py params list
+python3 skyquant.py params show params/experiments/20260928_203000_profit_rate.yaml
+python3 skyquant.py params apply params/experiments/20260928_203000_profit_rate.yaml --codes 000725
+python3 skyquant.py opt --no-apply   # 只归档参数组不生效，确认后再 params apply
 ```
 
 ### 标的集合与 `--stock-list` 参数说明
@@ -80,7 +87,7 @@ python main.py --stock-list 000725 --strategy trend  # 仅回测指定股票
 
 - `skyquant.py all`/`param_optimize.py`：`--stock-list` > `--all-stocks` > 回归标的集（默认），互相冲突或代码不在 config.yaml `stock_list` 中会直接报错（`common.resolve_target_codes` 统一解析）
 - `main.py`：不传时用 config.yaml 全部标的；`live_trading.py`：不传时取 live_trades.csv 全部成交
-- 五个寻优阶段脚本（param_optimize/out_sample/rolling/aggregate/write_config）均支持 `--stock-list`；阶段 CSV 经 `common.write_stage_csv` 按标的合并写——重跑某标的只替换该标的的行，其余标的行保留
+- 五个寻优阶段脚本（param_optimize/out_sample/rolling/aggregate/export_param_set）均支持 `--stock-list`；阶段 CSV 经 `common.write_stage_csv` 按标的合并写——重跑某标的只替换该标的的行，其余标的行保留；阶段五的参数集 apply 同样只合并涉及标的
 - `skyquant.py all` 结构：批量拉数据 → **股票池前置筛选（常驻，见 stock_filter.py）** → 按标的循环跑寻优链 5 阶段（单标的闭环后再下一个）→ 最后批量回测 + 实盘复盘/信号（live_trading）
 - `skyquant.py all --screen`：Pairlist Filters 质量门常驻；加 `--screen` 后在质量门通过者之上再做趋势性门控，只把 pairlist+trend 双通过的标的送入寻优；筛选报告写 `output/stock_filter.csv`（含 regime 标签，驱动策略路由）
 
@@ -147,7 +154,8 @@ trend 指标（config `stock_filter.trend`）：
 | opt_pipeline/out_sample_verify.py | 外样本校验（剔除过拟合；train/test 双段多指标） |
 | opt_pipeline/rolling_window_verify.py | 滚动窗口稳定性校验（平均收益/夏普/卡玛/回撤 5 列） |
 | opt_pipeline/aggregate_best_param.py | 最优参数聚合（按 config optimize_metric 选排序列，avg_test_profit>0 门槛） |
-| opt_pipeline/write_param_to_config.py | 参数写入 config.yaml（yaml.dump 整体重写，会清除注释） |
+| config_store.py | 参数集统一管理：load_config（config.yaml 深合并 active.yaml）/load_param_set/update_active_entry/export_experiment/apply_param_set/save_draft/list_param_sets，RLock + 原子写 |
+| opt_pipeline/export_param_set.py | 阶段五：聚合结果归档 params/experiments/<时间戳>_<objective>.yaml（含 metrics 元数据），默认再合并进 params/active.yaml；`--no-apply` 只归档；不碰 config.yaml |
 | ruff.toml | Ruff 配置（target-version=py39, line-length=260） |
 | tests/regression/run_regression.py | 策略回归基线：固定标的×类默认参数×缓存数据，对比 golden.json，支持 --update-golden |
 | tests/regression/golden.json | 回归基线指标（final_value/交易数/买卖次数等），确认改进后才更新 |
@@ -191,7 +199,13 @@ trend 指标（config `stock_filter.trend`）：
 
 ## 配置文件
 
-- config.yaml：全局配置，参数全部外置（分层：global_setting 资金/区间/`slippage_perc` 滑点、`stock_blacklist` 黑名单、commission_config 费率、stock_list 白名单（每条含 code/name/sector/sector_index/sector_index_name，stock_filter 筛选后自动写回 regime 字段）、stock_filter 三层筛选阈值、strategy_params 各标的策略参数、opt_pipeline 校验参数与 `optimize_metric` 优化目标 profit_rate/sharpe/calmar）
+- config.yaml：**固定配置**（分层：global_setting 资金/区间/`slippage_perc` 滑点、`stock_blacklist` 黑名单、commission_config 费率、stock_list 白名单（每条含 code/name/sector/sector_index/sector_index_name，stock_filter 筛选后自动写回 regime 字段）、stock_filter 三层筛选阈值、opt_pipeline 校验参数与 `optimize_metric` 优化目标 profit_rate/sharpe/calmar）。**不再包含 strategy_params**，可放心人工编辑保留注释
+- params/：**策略参数集目录**（机器生成 YAML，统一 schema `meta + strategy_params`）：
+  - `params/active.yaml` 生效参数集：回测/实盘默认读取；opt 阶段五与网页控制台「保存为生效」写入此处
+  - `params/experiments/<YYYYMMDD_HHMMSS>_<objective>.yaml`：每次 opt 自动归档的完整参数组（含滚动 avg_profit 等 metrics 元数据），不可变历史，可随时 `skyquant params apply` 重新生效
+  - `params/drafts/<name>.yaml`：网页控制台「另存草稿」的手工参数组，试跑满意后再生效
+  - 合并单元为 `(code, strategy)` 完整参数 dict；apply 只替换目标单元；CLI `skyquant params list/show/apply`；回测/实盘可用 `--params <file>` 临时用某组参数而不改变 active
+- 读取唯一入口：`config_store.load_config()`（config.yaml 深合并 active.yaml），DataProvider/main.py/live_trading/dashboard 全部经此；禁止业务代码再直接 yaml.safe_load(config.yaml) 取 strategy_params
 - live_trades.csv：实盘真实成交记录（trade_date, stock_code, side, price, size；仅 BUY/SELL 成交，不含 PNL 列）
 - ruff.toml：Ruff 格式化配置（target-version=py39, line-length=260）
 - ~/.skyquant/tushare.yaml：Tushare API token
@@ -330,7 +344,7 @@ DEFAULT_STRATEGY_PARAMS = {
 }
 ```
 
-`DEFAULT_STRATEGY_PARAMS` 为各策略的默认参数，当 config.yaml 的 `strategy_params` 中没有某只股票的优化参数时，`live_trading.py` 会回退使用这些默认参数。
+`DEFAULT_STRATEGY_PARAMS` 为各策略的默认参数，当生效参数集 params/active.yaml 中没有某只股票的优化参数时，`live_trading.py` 会回退使用这些默认参数。
 
 ### dataprovider.py
 
@@ -433,8 +447,9 @@ def print_console_summary(df, holdings, report_date)            # 三段式: 持
 
 ```python
 class LiveTrading:
-    def __init__(self, config_path="config.yaml", trade_csv="live_trades.csv", stock_list=None)
+    def __init__(self, config_path="config.yaml", trade_csv="live_trades.csv", stock_list=None, params_path=None)
         # stock_list: 逗号分隔股票代码，过滤 live_trades.csv
+        # params_path: 参数集 YAML（None=params/active.yaml），CLI 对应 --params
     def get_strategy_signal(self, code, strategy_id, param) -> Optional[pd.DataFrame]  # 从trade_log提取信号
     def match_live_trade(self) -> pd.DataFrame         # 按交易日匹配策略信号
     def summary_report(self, out_csv="output/live_trade_review.csv") -> pd.DataFrame  # 匹配率/胜率/盈亏
@@ -448,7 +463,7 @@ class LiveTrading:
 
 **输出**：`output/live_trade_review.csv`（成交-信号匹配矩阵）+ `output/live_signal_{YYYYMMDD}.csv`（持仓信号）+ `output/plots/live_portfolio_report.html`（实盘持仓报告）+ 控制台摘要。
 
-**默认参数回退**：当某只股票在 config.yaml 的 `strategy_params` 中没有优化后的参数时，使用 `strategy/__init__.py` 中的 `DEFAULT_STRATEGY_PARAMS` 作为回退。
+**默认参数回退**：当某只股票在生效参数集 params/active.yaml 中没有优化后的参数时，使用 `strategy/__init__.py` 中的 `DEFAULT_STRATEGY_PARAMS` 作为回退。
 
 **筛选层联动**：读 `output/stock_filter.csv`——`pairlist_passed=False` 的标的直接跳过；按 regime 用 `routed_strategies` 收窄参与共识的策略集（000725 regime=breakout 时只跑 breakout，不再三策略共识）；报告不存在时安全降级为全部 active 策略。config `stock_blacklist` 同步过滤。
 
@@ -508,7 +523,7 @@ def run_step(name, cwd, cmd)    # subprocess.Popen 执行, 非零退出码->sys.
 
 1. 行情拉取（批量，透传完整目标集；`--skip-data` 可跳过）
 2. **股票池前置筛选（常驻）**：`stock_filter.filter_stock_pool(DataProvider(), target_codes)` 写 output/stock_filter.csv；Pairlist Filters 未过者剔除并打印原因；`--screen` 时再用 trend `passed` 收窄；regime 标签供后续路由
-3. 逐标的循环：对每个 code 依次调用 5 个阶段脚本并透传 `--stock-list <code>`：param_optimize.py（内部按 regime 只跑路由策略）→ out_sample_verify.py → rolling_window_verify.py → aggregate_best_param.py → write_param_to_config.py；单标的 5 阶段闭环后再处理下一个标的
+3. 逐标的循环：对每个 code 依次调用 5 个阶段脚本并透传 `--stock-list <code>`：param_optimize.py（内部按 regime 只跑路由策略）→ out_sample_verify.py → rolling_window_verify.py → aggregate_best_param.py → export_param_set.py；单标的 5 阶段闭环后再处理下一个标的
 4. 收尾批量执行 main.py（不带 --strategy，按 regime 自动路由）与 live_trading.py（实盘成交复盘 + 次日信号 + HTML 报告），透传完整目标集——保证 metrics_summary / 复盘报告等汇总 CSV 不被单标的覆盖
 
 **标的集解析**：`common.resolve_target_codes(args, cfg)`，优先级 `--stock-list` > `--all-stocks` > `REGRESSION_STOCKS`；`--stock-list` 与 `--all-stocks` 互斥，未知代码报错；最后统一应用 config `stock_blacklist`。
@@ -632,7 +647,7 @@ python opt_pipeline/param_optimize.py --maxcpu 4 --stock-list 000725,600519  # �
 > 单只股票三策略合计 62208 个组合；仅保留 `profit_rate > 0` 的组合写入 CSV。
 
 **注意事项**：
-- **专属参数必须纳入网格**：`write_param_to_config.py` 只写网格产出的列，未进网格的参数（如曾遗漏的 `min_volatility_ratio`）会在写配置时丢失并静默回退类默认值。
+- **专属参数必须纳入网格**：`export_param_set.py` 只写网格产出的列，未进网格的参数（如曾遗漏的 `min_volatility_ratio`）会在导出参数集时丢失并静默回退类默认值。
 - **固定止盈已从网格移除**：`take_profit_atr_multiple` 默认 None（纯追踪止损为强制默认行为），如需寻优固定止盈需显式在网格加回正值维度。
 - `ema_fast`/`ema_slow`/`atr_period`/`macd_momentum_bars` 当前未纳入网格，按类默认值固定。
 - 参数命名约定：追踪/止盈类倍数统一以 `*_atr_multiple` 结尾（不用缩写），追踪相关以 `trail_` 开头。
@@ -696,10 +711,10 @@ def rolling_slice(df, start_year=2020, train_years=4, test_years=1,
 ### B. 参数契约
 
 8. **命名约定**：倍数类参数全称 `*_atr_multiple`（禁止 mult 缩写），追踪类以 `trail_` 开头；新参数名要自解释（如浮盈门槛用 `trail_tighten_profit_multiple`）。
-9. **新参数三处同步**：策略 `params` → `DEFAULT_STRATEGY_PARAMS`（如需默认回退）→ `PARAM_GRID`（**必须进网格**，否则 `write_param_to_config` 不产出该列，config 静默回退类默认值）。
+9. **新参数三处同步**：策略 `params` → `DEFAULT_STRATEGY_PARAMS`（如需默认回退）→ `PARAM_GRID`（**必须进网格**，否则 `export_param_set` 不产出该列，参数集静默回退类默认值）；看板中文标签还需同步 dashboard.py 的 `PARAM_CN`。
 10. **过滤参数归属**：公共风控/执行参数（atr_period/止损/止盈/摊低/Protections）定义在 BaseStrategy；方向性过滤参数（ema_*/macd_*/min_volatility_ratio/adx_*）属于 trend 专属，定义在 trend 子类，不上移基类；策略专属指标放子类 `populate_indicators`，命名对齐 freqtrade（macd/macdsignal/macdhist、adx/plus_di/minus_di、bb_*band）。
 11. **纯追踪止损默认**：`take_profit_atr_multiple` 默认 None，PARAM_GRID 不含固定止盈维度；加回固定止盈需显式评估（历史数据证明它截断盈利、盈亏比恶化）。
-12. **重命名时全量替换**：策略 id / 参数改名要同步 策略文件、`__init__.py`、`param_optimize.py`、`config.yaml`、AGENTS.md、spec.md（grep 旧名零残留），`output/*.csv` 旧产物下次跑流水线自动重建。
+12. **重命名时全量替换**：策略 id / 参数改名要同步 策略文件、`__init__.py`、`param_optimize.py`、dashboard.py `PARAM_CN`、AGENTS.md、spec.md（grep 旧名零残留），历史参数集 params/*.yaml 与 `output/*.csv` 旧产物下次保存/跑流水线自动重建。
 
 ### C. 注册表与接口
 
@@ -725,7 +740,7 @@ def rolling_slice(df, start_year=2020, train_years=4, test_years=1,
 
 ### 回归基线说明（tests/regression/）
 
-- `run_regression.py`：固定标的集（`REGRESSION_STOCKS = ["000725"]`，定义在 opt_pipeline/common.py，与参数寻优默认集同源；后续按需手动向该列表添加标的）× 全部注册策略，用**类默认参数**（`DEFAULT_STRATEGY_PARAMS`，不用 config 寻优参数）+ **本地缓存数据**（无网络）+ config 固定日期窗口，保证确定性可复现。
+- `run_regression.py`：固定标的集（`REGRESSION_STOCKS = ["000725"]`，定义在 opt_pipeline/common.py，与参数寻优默认集同源；后续按需手动向该列表添加标的）× 全部注册策略，用**类默认参数**（`DEFAULT_STRATEGY_PARAMS`，不用 active 参数集寻优参数）+ **本地缓存数据**（无网络）+ config 固定日期窗口，保证确定性可复现。
 - `golden.json`：每个 case 记录 `params 签名 / bars / final_value / total_return / n_trades / n_wins / n_buys / n_sells`；`final_value` 容差 0.01 元，结构指标精确匹配。
 - 回归脚本回答的是"策略代码改动是否改变了行为、改变方向是改进还是退化"；参数寻优（PARAM_GRID）回答的是"哪组参数更优"，两者目的不同，不可互相替代。
 
@@ -733,6 +748,6 @@ def rolling_slice(df, start_year=2020, train_years=4, test_years=1,
 
 1. 读 `agents.md` — 项目全貌、开发约定、关键决策、函数签名与算法逻辑
 2. 读 `spec.md` — 详细需求规范、模块职责、输出标准
-3. 读 `config.yaml` — 标的池、策略参数、费率配置
+3. 读 `config.yaml`（固定配置：标的池、费率、阈值）+ `params/active.yaml`（生效策略参数）；读 `config_store.py` 了解参数集加载/合并/归档机制
 4. 读目标源文件 — 完整实现细节（agents.md 中的签名/算法为快速参考，完整逻辑仍需阅读源码）
 5. 修改代码 — 遵循开发约定（英文注释、Optional[X]、Ruff 格式化）

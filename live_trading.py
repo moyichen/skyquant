@@ -303,8 +303,9 @@ class LiveTrading:
     """Live trading journal: match real fills against strategy signals and
     render a real-portfolio report with the next-day signal for each holding."""
 
-    def __init__(self, config_path: str = "config.yaml", trade_csv: Optional[str] = None, stock_list: Optional[str] = None):
-        self.data_provider = DataProvider(config_path=config_path)
+    def __init__(self, config_path: str = "config.yaml", trade_csv: Optional[str] = None,
+                 stock_list: Optional[str] = None, params_path: Optional[str] = None):
+        self.data_provider = DataProvider(config_path=config_path, params_path=params_path)
         self.cfg = self.data_provider.cfg
         if trade_csv is None:
             trade_csv = str(TRADE_CSV)
@@ -793,12 +794,19 @@ def main():
         action="store_true",
         help="Force full re-download of market data",
     )
+    parser.add_argument(
+        "--params",
+        type=str,
+        default=None,
+        help="Strategy param set YAML to use instead of params/active.yaml "
+        "(temporary override; the active set is not modified).",
+    )
     args = parser.parse_args()
 
     setup_logging()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    trader = LiveTrading(stock_list=args.stock_list)
+    trader = LiveTrading(stock_list=args.stock_list, params_path=args.params)
 
     # 1) Real fills vs strategy signals matrix CSV
     review_df = trader.summary_report()

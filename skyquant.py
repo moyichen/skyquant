@@ -9,10 +9,33 @@ Usage:
     python3 skyquant filter [--stock-list 000725,601633]
     python3 skyquant live [--stock-list 000725,601633] [--force-refresh]
     python3 skyquant all [--stock-list 000725,601633] [--all-stocks] [--skip-data] [--screen]
+    python3 skyquant params list | show <file> | apply <file> [--codes ...] [--strategies ...]
+
+Command independence:
+    fetch   — data only: incremental update by default, --force-refresh for full
+              re-download. Exits after all symbols are updated/skipped.
+    opt     — full optimization pipeline on cached data: grid -> out-of-sample
+              -> rolling -> aggregate -> export/apply param set. Exits when best
+              params are archived to params/experiments and merged into
+              params/active.yaml. No backtest or live review.
+    backtest— strategy backtest only: reads cached data (or --force-refresh),
+              writes equity curves + metrics_summary.csv, exits.
+    filter  — stock pool pre-filter only: writes stock_filter.csv + regime to
+              config.yaml, exits.
+    live    — live trade review + next-day signals only, exits.
+    params  — strategy param set management (active / drafts / experiments).
+    all     — full pipeline: fetch -> filter -> opt(5 stages) -> backtest -> live.
+
+Config layout (freqtrade-style):
+    config.yaml holds fixed settings only; per-stock strategy params live in
+    params/active.yaml (active set), params/drafts/ (manual groups) and
+    params/experiments/ (opt-archived groups). backtest/live accept --params to
+    temporarily run with any set without changing the active one.
 """
 
 import argparse
 import logging
+import os
 import subprocess
 import sys
 
@@ -58,20 +81,31 @@ def cmd_backtest(args):
         cmd += ["--stock-list", args.stock_list]
     if args.strategy:
         cmd += ["--strategy", args.strategy]
+    if args.params:
+        cmd += ["--params", args.params]
     if args.force_refresh:
         cmd += ["--force_refresh"]
     run_step("[Backtest] Run strategy backtest", PROJECT_ROOT, cmd)
 
 
 def cmd_opt(args):
-    """Run full optimization pipeline: grid -> out-of-sample -> rolling -> aggregate -> write."""
+    """Full optimization pipeline on cached data: grid -> out-of-sample ->
+    rolling -> aggregate -> export/apply param set.
+
+    Reads cached market data (run `fetch` first if data is stale), enumerates
+    the strategy PARAM_GRID, validates via out-of-sample and rolling windows,
+    aggregates the most stable optimal params, archives them as a timestamped
+    param set under params/experiments and (unless --no-apply) merges the
+    qualified entries into params/active.yaml. Exits when persisted — no
+    backtest or live review.
+    """
     opt_dir = PROJECT_ROOT / "opt_pipeline"
     stages = [
         ("Grid parameter optimization", "param_optimize.py"),
         ("Out-of-sample validation", "out_sample_verify.py"),
         ("Rolling window stability validation", "rolling_window_verify.py"),
         ("Aggregate optimal parameters", "aggregate_best_param.py"),
-        ("Write optimal parameters to config.yaml", "write_param_to_config.py"),
+        ("Export/apply optimal param set", "export_param_set.py"),
     ]
     for stage_name, script in stages:
         cmd = [sys.executable, script]
@@ -79,21 +113,98 @@ def cmd_opt(args):
             cmd += ["--stock-list", args.stock_list]
         elif args.all_stocks:
             cmd += ["--all-stocks"]
+        if script == "export_param_set.py" and args.no_apply:
+            cmd += ["--no-apply"]
         if args.maxcpu and args.maxcpu != 0:
             cmd += ["--maxcpu", str(args.maxcpu)]
         run_step(f"[Opt] {stage_name}", opt_dir, cmd)
 
 
 def cmd_fetch(args):
-    """Fetch/update market data for stock list."""
-    cmd = [sys.executable, "main.py", "--force_refresh"]
+    """Fetch/update market data only (no backtest).
+
+    Default = incremental update: for each symbol, if the cached CSV's latest
+    date is already today (or a future trading day), skip the API call; else
+    pull the delta from the cached latest date to config end_date and append.
+    --force-refresh = full re-download from config start_date to end_date.
+
+    Fetches both per-stock K-line + daily_basic (turnover/market-cap) and the
+    sector index bars referenced by each stock's sector_index field.
+    """
+    import yaml
+    from dataprovider import DataProvider
+
+    with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    pool = cfg["stock_list"]
     if args.stock_list:
-        cmd += ["--stock-list", args.stock_list]
-    # main.py --force_refresh fetches data and runs backtest; for pure fetch we
-    # still run main.py because DataProvider is embedded in the backtest flow.
-    # A lightweight alternative is to call DataProvider directly.
-    logger.info("Fetching market data via main.py --force_refresh ...")
-    run_step("[Fetch] Update market data", PROJECT_ROOT, cmd)
+        wanted = {c.strip() for c in args.stock_list.split(",") if c.strip()}
+        pool = [s for s in pool if s["code"] in wanted]
+    if not pool:
+        logger.error("No symbols to fetch; check --stock-list / config.yaml")
+        sys.exit(1)
+
+    dp = DataProvider()
+    # config end_date may be stale (hardcoded to a past date); override to today
+    # so incremental fetch actually pulls new bars. Tushare returns whatever is
+    # available up to end_date — non-trading days simply yield no new rows.
+    import datetime as _dt
+    today_str = _dt.date.today().strftime("%Y%m%d")
+    if dp.end_date < today_str:
+        logger.info(f"[Fetch] extending end_date {dp.end_date} -> {today_str} (today)")
+        dp.end_date = today_str
+    fr = args.force_refresh
+    mode = "force-refresh" if fr else "incremental"
+    logger.info(f"[Fetch] mode={mode}, symbols={len(pool)}")
+
+    fetched_indices = set()
+    n_skipped = 0
+    n_updated = 0
+    n_failed = 0
+    for i, s in enumerate(pool, start=1):
+        code, name = s["code"], s["name"]
+        cache_file = os.path.join(dp.cache_root, f"{code}.csv")
+        # Incremental mode: check if cache is already up to date before API call
+        if not fr and os.path.exists(cache_file):
+            try:
+                import pandas as pd
+                df_local = pd.read_csv(cache_file, parse_dates=["datetime"])
+                local_latest = df_local["datetime"].max().date()
+                import datetime as _dt
+                if local_latest >= _dt.date.today():
+                    logger.info(f"  [{i}/{len(pool)}] {code} {name}: cache up to date ({local_latest}), skip")
+                    n_skipped += 1
+                    continue
+            except Exception:
+                pass  # fall through to actual fetch
+
+        logger.info(f"  [{i}/{len(pool)}] {code} {name}: fetching ({mode})...")
+        try:
+            df = dp.fetch_stock(code, force_refresh=fr)
+            if df is not None and not df.empty:
+                n_updated += 1
+                logger.info(f"    -> {len(df)} rows, latest={df['datetime'].max().date()}")
+            else:
+                n_failed += 1
+                logger.warning(f"    -> empty data returned")
+        except Exception as e:
+            n_failed += 1
+            logger.error(f"    -> fetch failed: {e}")
+
+        # Also fetch the sector index for this stock (deduplicated)
+        sector_index = s.get("sector_index")
+        if sector_index and sector_index not in fetched_indices:
+            try:
+                idx_df = dp.fetch_index(sector_index, force_refresh=fr)
+                if idx_df is not None:
+                    fetched_indices.add(sector_index)
+                    logger.info(f"    sector index {sector_index} ({s.get('sector_index_name', '')}): "
+                                f"{len(idx_df)} rows")
+            except Exception as e:
+                logger.warning(f"    sector index {sector_index} fetch failed: {e}")
+
+    logger.info(f"[Fetch] done: {n_updated} updated, {n_skipped} up-to-date, {n_failed} failed")
 
 
 def cmd_filter(args):
@@ -109,6 +220,8 @@ def cmd_live(args):
     cmd = [sys.executable, "live_trading.py"]
     if args.stock_list:
         cmd += ["--stock-list", args.stock_list]
+    if args.params:
+        cmd += ["--params", args.params]
     if args.force_refresh:
         cmd += ["--force-refresh"]
     run_step("[Live] Trade review and signals", PROJECT_ROOT, cmd)
@@ -130,13 +243,10 @@ def cmd_all(args):
     logger.info(f"Project root: {PROJECT_ROOT}")
     logger.info(f"Target symbols ({len(target_codes)}): {codes_csv}")
 
-    # Step 1: fetch data
+    # Step 1: fetch data (force-refresh to ensure full range for optimization)
     if not args.skip_data:
-        run_step(
-            "[Data] Fetch full market data",
-            PROJECT_ROOT,
-            [sys.executable, "main.py", "--force_refresh", "--stock-list", codes_csv],
-        )
+        fetch_args = argparse.Namespace(stock_list=codes_csv, force_refresh=True)
+        cmd_fetch(fetch_args)
     else:
         logger.info("--skip-data enabled, skipping market data fetch")
 
@@ -180,7 +290,7 @@ def cmd_all(args):
         ("Out-of-sample validation", "out_sample_verify.py"),
         ("Rolling window stability validation", "rolling_window_verify.py"),
         ("Aggregate optimal parameters", "aggregate_best_param.py"),
-        ("Write optimal parameters to config.yaml", "write_param_to_config.py"),
+        ("Export/apply optimal param set", "export_param_set.py"),
     ]
     opt_dir = PROJECT_ROOT / "opt_pipeline"
     for index, code in enumerate(target_codes, start=1):
@@ -218,6 +328,53 @@ def cmd_all(args):
     logger.info(f"  - Run log: {LOG_FILE}")
 
 
+def cmd_params(args):
+    """Strategy param set management: list / show / apply."""
+    import yaml
+
+    import config_store as cs
+
+    if args.params_action == "list":
+        sets = cs.list_param_sets()
+        groups = [("active", "生效参数集（回测/实盘默认）"),
+                  ("drafts", "手工草稿（另存未生效）"),
+                  ("experiments", "opt 自动归档")]
+        for g, title in groups:
+            print(f"\n== {title} ==")
+            if not sets[g]:
+                print("  (空)")
+            for s in sets[g]:
+                m = s["meta"] or {}
+                extra = f"  objective={m['objective']}" if m.get("objective") else ""
+                note = f"  {m['note']}" if m.get("note") else ""
+                print(f"  {s['file']}  [{s['n_codes']}标的/{s['n_entries']}策略组]"
+                      f"  src={m.get('source', '-')}  {m.get('created_at', '')}{extra}{note}")
+        print()
+        return
+
+    if args.params_action == "show":
+        if not args.file:
+            logger.error("show 需要指定参数集文件，如 params/experiments/xxx.yaml")
+            sys.exit(2)
+        ps = cs.load_param_set(args.file)
+        print(yaml.safe_dump(ps, allow_unicode=True, sort_keys=False), end="")
+        return
+
+    # apply
+    if not args.file:
+        logger.error("apply 需要指定参数集文件，如 params/experiments/xxx.yaml")
+        sys.exit(2)
+    codes = [c.strip() for c in args.codes.split(",")] if args.codes else None
+    strategies = [s.strip() for s in args.strategies.split(",")] if args.strategies else None
+    res = cs.apply_param_set(args.file, codes=codes, strategies=strategies, note=args.note)
+    if not res["applied"]:
+        logger.warning("没有匹配的 code/strategy，未改动 active.yaml")
+    else:
+        logger.info(f"已生效 {len(res['applied'])} 个参数单元 -> {res['path']}")
+        for code, sid in res["applied"]:
+            logger.info(f"  {code} / {sid}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="SkyQuant unified CLI",
@@ -239,6 +396,8 @@ def main():
                    choices=["trend", "range", "breakout"],
                    help="Force strategy for all stocks (default: auto-route by regime)")
     p.add_argument("--force-refresh", action="store_true", help="Force re-download market data")
+    p.add_argument("--params", type=str, default=None,
+                   help="Param set YAML to use temporarily instead of params/active.yaml")
     p.set_defaults(func=cmd_backtest)
 
     # opt
@@ -246,6 +405,8 @@ def main():
     p.add_argument("--stock-list", type=str, default=None)
     p.add_argument("--all-stocks", action="store_true")
     p.add_argument("--maxcpu", type=int, default=0)
+    p.add_argument("--no-apply", action="store_true",
+                   help="Only archive the optimal set to params/experiments without merging into active.yaml")
     p.set_defaults(func=cmd_opt)
 
     # fetch
@@ -263,6 +424,8 @@ def main():
     p = subparsers.add_parser("live", help="Live trading review and signals")
     p.add_argument("--stock-list", type=str, default=None)
     p.add_argument("--force-refresh", action="store_true")
+    p.add_argument("--params", type=str, default=None,
+                   help="Param set YAML to use temporarily instead of params/active.yaml")
     p.set_defaults(func=cmd_live)
 
     # all
@@ -273,6 +436,16 @@ def main():
     p.add_argument("--screen", action="store_true",
                    help="Additionally apply trendability gate")
     p.set_defaults(func=cmd_all)
+
+    # params — strategy param set management
+    p = subparsers.add_parser("params", help="Manage strategy param sets (list/show/apply)")
+    p.add_argument("params_action", choices=["list", "show", "apply"],
+                   help="list all sets | show one set | merge one set into params/active.yaml")
+    p.add_argument("file", nargs="?", default=None, help="Param set YAML (for show/apply)")
+    p.add_argument("--codes", type=str, default=None, help="Comma-separated codes to apply")
+    p.add_argument("--strategies", type=str, default=None, help="Comma-separated strategy ids to apply")
+    p.add_argument("--note", type=str, default=None, help="Note recorded into active.yaml meta on apply")
+    p.set_defaults(func=cmd_params)
 
     args = parser.parse_args()
     if not args.command:

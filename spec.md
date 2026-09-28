@@ -18,9 +18,9 @@
 
 SkyQuant 是一套**全自动、可复现、可校验、可迭代**的 A 股日线量化策略回测流水线。
 
-一站式完成：行情拉取 → 缓存管理 → 股票池前置筛选（质量门/趋势门/regime 分类路由）→ 网格参数寻优 → 过拟合剔除 → 滚动稳定性校验 → 最优参数聚合 → 自动写入配置 → 策略回测 → 指标计算 → 可视化绘图 → 日志留存 → 实盘成交复盘与次日信号。
+一站式完成：行情拉取 → 缓存管理 → 股票池前置筛选（质量门/趋势门/regime 分类路由）→ 网格参数寻优 → 过拟合剔除 → 滚动稳定性校验 → 最优参数聚合 → 参数集归档并生效（experiments + active.yaml）→ 策略回测 → 指标计算 → 可视化绘图 → 日志留存 → 实盘成交复盘与次日信号。
 
-系统按层解耦：配置层 config.yaml → 数据层 dataprovider.py → 筛选层 stock_filter.py → 策略插件层 strategy/ → 回测引擎层 main.py → 指标报表层 report.py → 寻优层 opt_pipeline/ → 统一 CLI skyquant.py；公共能力（手续费、路径、日志、broker 装配）收敛于 comm.py。策略只负责信号规则，不读文件、不拉数据、不筛选标的、不绘图；新增策略只需新增文件并注册 STRATEGY_MAPPING。
+系统按层解耦：配置层 config.yaml（固定配置）+ params/ 参数集（生效 active.yaml / 手工草稿 drafts / opt 归档 experiments）经 config_store.py 统一加载 → 数据层 dataprovider.py → 筛选层 stock_filter.py → 策略插件层 strategy/ → 回测引擎层 main.py → 指标报表层 report.py → 寻优层 opt_pipeline/ → 统一 CLI skyquant.py；公共能力（手续费、路径、日志、broker 装配）收敛于 comm.py。策略只负责信号规则，不读文件、不拉数据、不筛选标的、不绘图；新增策略只需新增文件并注册 STRATEGY_MAPPING。
 
 ### 1\.2 核心能力
 
@@ -77,7 +77,12 @@ skyquant/
 ├── stock_filter.py            # 股票池前置筛选层：Pairlist Filters + trend 趋势门 + regime 分类
 ├── comm.py                    # 公共工具层：手续费/路径常量/日志/broker 装配/黑名单
 ├── report.py                  # 指标与报表层：指标计算 + HTML 报表 + K 线图
-├── config.yaml                # 全局配置文件（全部可调参数外置）
+├── config_store.py          # 配置/参数集统一加载层：load_config（config.yaml 深合并 active）+ 参数集 apply/归档/草稿
+├── config.yaml                # 固定配置文件（资金/区间/费率/黑白名单/股票池/筛选阈值/寻优目标；不含策略参数）
+├── params/                    # 策略参数集目录（高频变动，机器生成 YAML）
+│   ├── active.yaml            #   生效参数集（回测/实盘默认读取，opt 与看板写入此处）
+│   ├── drafts/                #   手工草稿（看板「另存草稿」，未生效）
+│   └── experiments/           #   opt 自动归档（<时间戳>_<objective>.yaml，含 metrics，不可变历史）
 ├── live_trades.csv            # 实盘真实成交记录
 ├── cache/
 │   ├── stock_cache/           # 股票K线缓存CSV
@@ -106,7 +111,7 @@ skyquant/
     ├── out_sample_verify.py
     ├── rolling_window_verify.py
     ├── aggregate_best_param.py
-    └── write_param_to_config.py
+    └── export_param_set.py     # 阶段五：归档 params/experiments/ 并合并进 params/active.yaml（--no-apply 只归档）
 ```
 
 ---
@@ -319,7 +324,9 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 - aggregate\_best\_param：每标的每策略保留一组最优稳定参数；排序列由 `optimize_metric` 决定（profit_rate→avg_test_profit、sharpe→avg_test_sharpe、calmar→avg_test_calmar），仍以 avg_test_profit > 0 作为 recommend_use 门槛。
 
-- write\_param\_to\_config：自动落地到 config\.yaml（仅更新传入标的的 `strategy_params` 条目；yaml.dump 整体重写，会清除 config 注释）。
+- export\_param\_set：阶段五落地（不碰 config.yaml）。读 aggregate CSV 中 `recommend_use=True` 的行，经 `config_store.export_experiment` 归档为 `params/experiments/<时间戳>_<optimize_metric>.yaml`（携带 objective/codes/metrics.avg_profit 等 meta，不可变历史），默认再经 `apply_param_set` 以 `(code, strategy)` 为合并单元并入 `params/active.yaml`（原子写、保留 meta 审计字段）；`--no-apply` 只归档不生效，事后用 `skyquant params apply` 选择性生效。
+
+**参数集工作流**：固定配置（资金/费率/股票池/阈值）留在 config.yaml 长期不动；高频变动的策略参数全部在 params/ 下。回测/实盘默认加载 active.yaml；main.py / live_trading.py / skyquant.py 支持 `--params <file>` 临时使用任意参数集（对标 freqtrade 多 config 叠加，只读不改 active）；`skyquant params list|show|apply` 管理三组目录，apply 支持 `--codes/--strategies` 局部合并；网页控制台可调参「保存为生效」或「另存草稿」并对历史归档一键回滚。config.yaml 中若残留 `strategy_params` 字段会触发 DeprecationWarning。
 
 **阶段脚本通用约定**：五个阶段脚本均支持 `--stock-list` 过滤；三个重计算阶段（param\_optimize / out\_sample\_verify / rolling\_window\_verify）另支持 `--maxcpu`（默认 0=全部 CPU），按标的建一次多进程 Pool，行情切片经 Pool initializer 每个 worker 只传一次，回测任务（strategy\_id + params）多进程并行（`--maxcpu 1` 走进程内串行，结果与多进程逐位一致）。阶段 CSV 统一经 `common.write_stage_csv` 写出——带 `--stock-list` 时按标的合并写（替换该标的旧行、保留其他标的行，即使该标的本次无合格行也会清除其旧行），不带时整体重写。
 
@@ -378,9 +385,11 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 ---
 
-## 5\. config\.yaml 配置规范
+## 5\. 配置规范（config.yaml 固定配置 + params/ 参数集）
 
-全局唯一配置入口，所有参数不写死代码。
+全局配置分两层，固定项与高频变动项分离（对标 freqtrade 固定 config + 参数集覆盖文件）。所有参数不写死代码。
+
+**config.yaml — 固定配置（人工维护，注释完整保留）**：
 
 - global\_setting：资金、回测时间区间、`slippage_perc` 百分比滑点（0.0 关闭）
 
@@ -388,15 +397,21 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 - commission\_config：完整A股交易费率
 
+- stock\_list：标的白名单（含 code/name/sector 等，stock_filter 筛选后文本级写回 regime 字段）
+
 - stock\_filter：前置筛选阈值（stock_filter.pairlist 五组 Pairlist Filters / trend 趋势门 / regime 分类），详见 4.2 节
 
 - opt\_pipeline：外样本校验与滚动窗口校验的可调参数（切分日期、过拟合阈值、窗口长度、最低 K 线数、`optimize_metric` 排序目标），详见 4.6 节
 
 - tushare 密钥独立存放于用户目录 `~/.skyquant/tushare.yaml`（不随项目入库），config.yaml 中不包含 token
 
-- stock\_list：回测标的池（白名单）
+**params/ — 策略参数集（机器生成，统一 schema `meta` + `strategy_params`；策略参数按 code→strategy→参数 dict 组织）**：
 
-- strategy\_params：流水线自动更新的最优参数结果（yaml.dump 重写会清除注释，阈值默认值以 stock_filter.py / 策略类代码为准）
+- `active.yaml`：生效参数集，回测/实盘默认读取；opt 阶段五与看板「保存为生效」以 `(code, strategy)` 为单元合并写入（RLock 串行 + `.tmp` + `os.replace` 原子写）
+- `experiments/`：opt 每次运行自动归档的不可变参数组（文件名含时间戳与 objective），可随时回滚生效
+- `drafts/`：看板「另存草稿」的手工参数组，不影响回测/实盘
+
+加载与管理统一经 `config_store.py`：`load_config(config_path, params_path)` 深合并 config.yaml 与 active.yaml（params\_path 为只读临时覆盖），并提供 `list_param_sets/show/apply/save_draft/delete/export_experiment`；CLI 为 `skyquant params list|show|apply`，回测与实盘入口支持 `--params`。业务代码禁止再直接从 config.yaml 读 `strategy_params`（残留该字段会触发 DeprecationWarning）。
 
 ---
 

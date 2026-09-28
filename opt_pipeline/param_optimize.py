@@ -84,6 +84,13 @@ PARAM_GRID = {
 # Grid actually optimized: PARAM_GRID filtered by strategy.ACTIVE_STRATEGIES
 ACTIVE_PARAM_GRID = {sid: grid for sid, grid in PARAM_GRID.items() if ACTIVE_STRATEGIES is None or sid in ACTIVE_STRATEGIES}
 
+# One-line description per strategy for the pre-run summary
+STRATEGY_DESC = {
+    "trend": "四重趋势过滤 + 动量确认 + ATR 移动止损（趋势市）",
+    "range": "布林带均值回归 + 急跌反弹（震荡市，绕过趋势过滤）",
+    "breakout": "唐奇安通道突破（高波动市，绕过趋势过滤）",
+}
+
 
 def main():
     parser = argparse.ArgumentParser(description="Grid parameter optimization")
@@ -119,36 +126,61 @@ def main():
     cache_map = {code: runner.data_provider.load_cached_data(code) for code in valid_codes}
 
     result_rows = []
+
+    # ---- Pre-run summary: list grid size per stock/strategy before starting ----
+    plan = []  # (code, strategy_id, grid, n_combos)
+    total_combos = 0
     for code in valid_codes:
         df = cache_map[code]
         if df is None or df.empty:
-            print(f"Symbol {code} has no cached data, skipping")
+            print(f"[skip] {code}: 无缓存数据")
             continue
         strategies = routed_strategies(code, regime_map, ACTIVE_STRATEGIES)
         for strategy_id in strategies:
             grid = ACTIVE_PARAM_GRID[strategy_id]
-            print(f"Symbol {code} strategy {strategy_id}: grid {len(grid)} params on {maxcpu} workers")
-            try:
-                results = runner.optimize(df, strategy_id, grid, maxcpu=maxcpu)
-            except Exception as e:
-                print(f"Exception {code} {strategy_id}: {e}")
-                continue
-            for param_dict, metrics in results:
-                final_value = metrics["final_value"]
-                profit = final_value - runner.initial_capital
-                result_rows.append(
-                    {
-                        "stock_code": code,
-                        "strategy": strategy_id,
-                        **param_dict,
-                        "final_capital": round(final_value, 2),
-                        "profit": round(profit, 2),
-                        "profit_rate": round(metrics["profit_rate"], 4),
-                        "sharpe_ratio": metrics["sharpe_ratio"],
-                        "max_drawdown": metrics["max_drawdown"],
-                        "calmar_ratio": metrics["calmar_ratio"],
-                    }
-                )
+            n_combos = 1
+            for v in grid.values():
+                n_combos *= len(v)
+            plan.append((code, strategy_id, grid, n_combos))
+            total_combos += n_combos
+
+    print("=" * 70)
+    print(f"网格寻优计划：{len(plan)} 个 标的×策略 组合，共 {total_combos:,} 个参数组合")
+    print(f"排序指标: {optimize_metric}  |  并发: {maxcpu}  |  分块: {BacktestRunner.JOBS_PER_CHUNK}/块, 最多 {BacktestRunner.MAX_CONCURRENT_CHUNKS} 并行块")
+    print("-" * 70)
+    for code, strategy_id, grid, n_combos in plan:
+        dims = len(grid)
+        desc = STRATEGY_DESC.get(strategy_id, "")
+        print(f"  {code}  {strategy_id:8s}  {dims:2d}维 {n_combos:>6,} 组合  | {desc}")
+    print("-" * 70)
+    print(f"总计: {total_combos:,} 组合  (按 {BacktestRunner.JOBS_PER_CHUNK}/块 分块 → "
+          f"{(total_combos + BacktestRunner.JOBS_PER_CHUNK - 1) // BacktestRunner.JOBS_PER_CHUNK} 块)")
+    print("=" * 70)
+
+    for code, strategy_id, grid, n_combos in plan:
+        df = cache_map[code]
+        print(f"\n>>> {code} {strategy_id} ({n_combos:,} 组合) ...")
+        try:
+            results = runner.optimize(df, strategy_id, grid, maxcpu=maxcpu)
+        except Exception as e:
+            print(f"Exception {code} {strategy_id}: {e}")
+            continue
+        for param_dict, metrics in results:
+            final_value = metrics["final_value"]
+            profit = final_value - runner.initial_capital
+            result_rows.append(
+                {
+                    "stock_code": code,
+                    "strategy": strategy_id,
+                    **param_dict,
+                    "final_capital": round(final_value, 2),
+                    "profit": round(profit, 2),
+                    "profit_rate": round(metrics["profit_rate"], 4),
+                    "sharpe_ratio": metrics["sharpe_ratio"],
+                    "max_drawdown": metrics["max_drawdown"],
+                    "calmar_ratio": metrics["calmar_ratio"],
+                }
+            )
 
     res_df = pd.DataFrame(result_rows)
     if not res_df.empty:

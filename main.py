@@ -186,13 +186,20 @@ def main():
         default=None,
         help="Comma-separated stock codes to run. Defaults to all stocks in config.yaml.",
     )
+    parser.add_argument(
+        "--params",
+        type=str,
+        default=None,
+        help="Strategy param set YAML to use instead of params/active.yaml "
+        "(freqtrade-style temporary override; the active set is not modified).",
+    )
     args = parser.parse_args()
 
     setup_logging()
     prepare_output_dirs()
 
     # Load config and build runtime dependencies
-    data_provider = DataProvider()
+    data_provider = DataProvider(params_path=args.params)
     cfg = data_provider.cfg
     stock_list = cfg["stock_list"]
     if args.stock_list:
