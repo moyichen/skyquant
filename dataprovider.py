@@ -12,7 +12,8 @@ DEFAULT_CREDENTIALS_PATH = os.path.expanduser("~/.skyquant/tushare.yaml")
 
 
 # ===================== Data format constants =====================
-# Complete business fields (all fields needed, including turn turnover rate)
+# Complete business fields (all fields needed, including turn turnover rate
+# and total_mv/circ_mv market caps in 10k CNY from daily_basic)
 RAW_COLS = [
     "trade_date",
     "open",
@@ -23,8 +24,13 @@ RAW_COLS = [
     "vol",
     "amount",
     "turn",
+    "total_mv",
+    "circ_mv",
     "pct_chg",
 ]
+
+# daily_basic 拉取字段（turnover_rate 合并后改名 turn；市值单位：万元）
+DAILY_BASIC_FIELDS = "trade_date,turnover_rate,total_mv,circ_mv"
 
 # Mapping adapted to backtrader naming
 RENAME_MAP = {
@@ -128,18 +134,27 @@ class DataProvider:
 
     @staticmethod
     def _merge_kline_and_turn(df_kline: pd.DataFrame, df_turn: pd.DataFrame) -> pd.DataFrame:
-        """Merge K-line data + turnover data (turnover_rate -> turn, fill NaN with 0)"""
+        """Merge K-line + daily_basic (turnover_rate->turn; total_mv/circ_mv 万元)。
+
+        turn 缺失填 0（与历史口径一致）；市值列保留 NaN，由使用方自行判空。
+        """
         df_turn = df_turn.rename(columns={"turnover_rate": "turn"})
-        df_merge = pd.merge(df_kline, df_turn[["trade_date", "turn"]], on="trade_date", how="left")
+        basic_cols = [c for c in ("trade_date", "turn", "total_mv", "circ_mv") if c in df_turn.columns]
+        df_merge = pd.merge(df_kline, df_turn[basic_cols], on="trade_date", how="left")
         df_merge["turn"] = df_merge["turn"].fillna(0.0)
         return df_merge
 
     def format_df(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Field cleaning, datetime conversion, column rename, keep all business fields (including turn)"""
-        missing_cols = [col for col in self.RAW_COLS if col not in df.columns]
+        """Field cleaning, datetime conversion, column rename, keep all business fields
+        (turn + total_mv/circ_mv; 市值缺失时补 NaN 列，兼容无该字段权限的 token)"""
+        required = [c for c in self.RAW_COLS if c not in ("total_mv", "circ_mv")]
+        missing_cols = [col for col in required if col not in df.columns]
         if missing_cols:
             raise ValueError(f"Returned data missing required fields: {missing_cols}, original columns: {list(df.columns)}")
 
+        for col in ("total_mv", "circ_mv"):
+            if col not in df.columns:
+                df[col] = pd.NA
         df = df[self.RAW_COLS].copy()
         df["datetime"] = pd.to_datetime(df["trade_date"])
         df.rename(columns=self.RENAME_MAP, inplace=True)
@@ -162,7 +177,7 @@ class DataProvider:
                 ts_code=ts_code,
                 start_date=self.start_date,
                 end_date=self.end_date,
-                fields="trade_date,turnover_rate",
+                fields=DAILY_BASIC_FIELDS,
             )
         except Exception as err:
             print(f"[Interface error] {stock_code} request failed: {err!s}")
@@ -186,7 +201,7 @@ class DataProvider:
                 ts_code=ts_code,
                 start_date=start_dt,
                 end_date=end_dt,
-                fields="trade_date,turnover_rate",
+                fields=DAILY_BASIC_FIELDS,
             )
         except Exception as err:
             print(f"{stock_code} incremental update failed: {err}")
@@ -209,6 +224,38 @@ class DataProvider:
         start_dt = pd.to_datetime(self.start_date)
         return df[df["datetime"] >= start_dt].reset_index(drop=True)
 
+    def _backfill_mv_columns(self, stock_code: str, df_local: pd.DataFrame, cache_path: str) -> pd.DataFrame:
+        """旧缓存一次性迁移：补拉全区间 daily_basic 的 total_mv/circ_mv 合并回缓存。
+
+        只调一次 daily_basic（不重拉 pro_bar K 线，零额外积分浪费）；失败则原样返回，
+        使用方回退到 amount/turn 推导市值口径。
+        """
+        if "circ_mv" in df_local.columns:
+            return df_local
+        ts_code = self.get_ts_code(stock_code)
+        try:
+            df_basic = self.pro.daily_basic(
+                ts_code=ts_code,
+                start_date=self.start_date,
+                end_date=self.end_date,
+                fields="trade_date,total_mv,circ_mv",
+            )
+        except Exception as err:
+            print(f"[Warning] {stock_code} market-cap backfill failed, fallback to derived mv: {err}")
+            return df_local
+        if df_basic is None or df_basic.empty:
+            return df_local
+        df_local = df_local.copy()
+        df_local = df_local.drop(columns=["total_mv", "circ_mv"], errors="ignore")
+        # 缓存 trade_date 读入常为 int，daily_basic 返回 str，统一为 8 位字符串再合并
+        df_local["trade_date"] = df_local["trade_date"].astype(str).str.replace(r"\D", "", regex=True).str.zfill(8)
+        df_basic["trade_date"] = df_basic["trade_date"].astype(str)
+        df_local = pd.merge(df_local, df_basic, on="trade_date", how="left")
+        df_local.sort_values("datetime", inplace=True)
+        df_local.reset_index(drop=True, inplace=True)
+        df_local.to_csv(cache_path, index=False)
+        return df_local
+
     def fetch_stock(self, stock_code: str, force_refresh: bool = False) -> Optional[pd.DataFrame]:
         """
         Main fetch function: incremental update + same-day cache validation + full-field storage (including turnover)
@@ -225,6 +272,8 @@ class DataProvider:
         # Branch 2: local cache exists, check update status
         if os.path.exists(cache_path):
             df_local = pd.read_csv(cache_path, parse_dates=["datetime"])
+            # 旧缓存一次性迁移：补 total_mv/circ_mv（仅一次轻量 daily_basic 调用）
+            df_local = self._backfill_mv_columns(stock_code, df_local, cache_path)
             local_latest_dt = df_local["datetime"].max()
             local_latest_day = local_latest_dt.date()
 

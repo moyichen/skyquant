@@ -16,6 +16,7 @@
 import argparse
 import json
 import logging
+import sys
 import threading
 import webbrowser
 from datetime import datetime
@@ -107,6 +108,67 @@ def _last_close(code: str):
         return None, None
 
 
+def _run_length(state: pd.Series, dates: pd.Series, warmup: int):
+    """返回 (当前状态, 状态已持续交易日数, 状态起始日 str)。
+
+    state: bool Series（True=多头/金叉）；warmup 之前为指标预热，不参与判定。
+    持续天数 = 最新 bar 与最近一次状态翻转 bar 的索引差（翻转当日为 0）。
+    窗口内从未翻转则以首个有效 bar 为起点。
+    """
+    valid = state.iloc[warmup:].astype(bool).reset_index(drop=True)
+    vdates = pd.to_datetime(dates).iloc[warmup:].reset_index(drop=True)
+    if valid.empty:
+        return None
+    current = bool(valid.iloc[-1])
+    start_idx = 0
+    for i in range(len(valid) - 1, 0, -1):
+        if valid.iloc[i] != valid.iloc[i - 1]:
+            start_idx = i
+            break
+    days = len(valid) - 1 - start_idx
+    return current, int(days), vdates.iloc[start_idx].strftime("%Y-%m-%d")
+
+
+def _latest_signals(code: str):
+    """从本地行情缓存计算最新 MACD 金叉/死叉与 EMA20/60 多空排列及持续天数。
+
+    口径与 report.py 交互K线、strategy/trend.py 完全一致：
+      MACD: DIF=EMA12-EMA26，DEA=EMA9(DIF)，DIF 上穿 DEA=金叉
+      EMA : EMA20 > EMA60 = 多头排列，反之为空头排列
+    """
+    cache_file = STOCK_CACHE_DIR / f"{code}.csv"
+    if not cache_file.exists():
+        return None
+    try:
+        df = pd.read_csv(cache_file, usecols=["datetime", "close"])
+        df = df.dropna(subset=["close"]).reset_index(drop=True)
+        close = df["close"]
+        if len(close) < 60:
+            return None
+
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        dif = ema12 - ema26
+        dea = dif.ewm(span=9, adjust=False).mean()
+        ema20 = close.ewm(span=20, adjust=False).mean()
+        ema60 = close.ewm(span=60, adjust=False).mean()
+
+        dates = df["datetime"]
+        out = {}
+        macd = _run_length(dif > dea, dates, warmup=35)
+        if macd is not None:
+            bull, days, since = macd
+            out["macd"] = {"bull": bull, "days": days, "since": since}
+        ema = _run_length(ema20 > ema60, dates, warmup=60)
+        if ema is not None:
+            bull, days, since = ema
+            out["ema"] = {"bull": bull, "days": days, "since": since}
+        return out or None
+    except Exception as e:
+        logger.warning(f"dashboard: signal calc failed for {code}: {e}")
+        return None
+
+
 def build_state() -> dict:
     """扫描配置/报告目录/持仓，生成看板渲染所需的全部状态（每次请求实时计算）。"""
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -147,6 +209,7 @@ def build_state() -> dict:
             "sector_index_name": s.get("sector_index_name") or "",
             "available": any_report,
             "strategies": strategies,
+            "signals": _latest_signals(code),
         })
 
     sector_groups = [
@@ -257,6 +320,9 @@ PAGE_HTML = r"""<!DOCTYPE html>
   .sc-code { font-size: 12px; color: #6b7c93; }
   .sc-tags { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
   .regime-tag { font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid #2E86AB; color: #7fc1e0; }
+  .sig-tag { font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid; font-variant-numeric: tabular-nums; }
+  .sig-bull { color: #EF5350; border-color: #7a3a3a; background: #2a1717; }
+  .sig-bear { color: #26A69A; border-color: #2a6b62; background: #122622; }
   .holding-dot { font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid #8d6e00; color: #e8c45a; background: #241f10; }
   .sc-strats { display: flex; gap: 6px; flex-wrap: wrap; }
   .strat-badge { font-size: 11px; padding: 2px 9px; border-radius: 10px; background: #121a27; border: 1px solid #2a3548; color: #9fb3c8; }
@@ -358,6 +424,26 @@ function renderHoldings() {
 }
 
 /* ---------------- 主页：板块与标的 ---------------- */
+function signalTags(s) {
+  /* 最新 MACD 金叉/死叉 + EMA20/60 多空排列，均标注持续交易日数 */
+  const sg = s.signals;
+  if (!sg) return "";
+  let html = "";
+  if (sg.macd) {
+    const m = sg.macd;
+    const label = m.bull ? "金叉" : "死叉";
+    const tip = `MACD${label} · 已持续 ${m.days} 个交易日（自 ${m.since}）`;
+    html += `<span class="sig-tag ${m.bull ? "sig-bull" : "sig-bear"}" title="${tip}">${label}${m.days}d</span>`;
+  }
+  if (sg.ema) {
+    const e = sg.ema;
+    const label = e.bull ? "EMA多头" : "EMA空头";
+    const tip = `${e.bull ? "EMA20>EMA60 多头排列" : "EMA20<EMA60 空头排列"} · 已持续 ${e.days} 个交易日（自 ${e.since}）`;
+    html += `<span class="sig-tag ${e.bull ? "sig-bull" : "sig-bear"}" title="${tip}">${label}${e.days}d</span>`;
+  }
+  return html;
+}
+
 function renderSectors() {
   const held = holdingCodes();
   const container = document.getElementById("sector-container");
@@ -374,7 +460,7 @@ function renderSectors() {
       if (!s.available) {
         html += `<div class="stock-card disabled" title="报告尚未生成">
             <div class="sc-top"><span class="sc-name">${esc(s.name)}</span><span class="sc-code">${esc(s.code)}</span></div>
-            <div class="sc-tags">${s.regime ? `<span class="regime-tag">${esc(STATE.regime_cn[s.regime] || s.regime)}</span>` : ""}</div>
+            <div class="sc-tags">${s.regime ? `<span class="regime-tag">市况·${esc(STATE.regime_cn[s.regime] || s.regime)}</span>` : ""}${signalTags(s)}</div>
             <div class="sc-na">报告未生成</div>
           </div>`;
         continue;
@@ -393,7 +479,8 @@ function renderSectors() {
       html += `<div class="stock-card" onclick="location.hash='#/${s.code}/${firstReady}'">
           <div class="sc-top"><span class="sc-name">${esc(s.name)}</span><span class="sc-code">${esc(s.code)}</span></div>
           <div class="sc-tags">
-            ${s.regime ? `<span class="regime-tag">${esc(STATE.regime_cn[s.regime] || s.regime)}</span>` : ""}
+            ${s.regime ? `<span class="regime-tag">市况·${esc(STATE.regime_cn[s.regime] || s.regime)}</span>` : ""}
+            ${signalTags(s)}
             ${held.has(s.code) ? `<span class="holding-dot">实仓持有</span>` : ""}
           </div>
           <div class="sc-strats">${badges}</div>
@@ -502,6 +589,11 @@ setInterval(pollState, 10000);
 
 
 # ===================== HTTP 服务 =====================
+class DashboardServer(ThreadingHTTPServer):
+    allow_reuse_address = True  # SO_REUSEADDR：重启不再撞上 TIME_WAIT
+    daemon_threads = True       # 工作线程随主进程退出，避免关停时挂起
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     def _send(self, code, body: bytes, content_type: str):
         self.send_response(code)
@@ -548,6 +640,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
         logger.debug("dashboard http: " + fmt, *args)
 
 
+def _find_port_pid(host: str, port: int):
+    """返回占用 host:port 的进程 PID（跨平台尽力实现，取不到返回 None）。"""
+    import shutil
+    import subprocess
+
+    lsof = shutil.which("lsof")
+    if not lsof:
+        return None
+    try:
+        out = subprocess.run(
+            [lsof, "-nP", "-iTCP:%d" % port, "-sTCP:LISTEN", "-t"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        pids = [p for p in out.splitlines() if p.isdigit()]
+        return pids[0] if pids else None
+    except Exception:
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="SkyQuant 回测看板主页")
     parser.add_argument("--host", default="127.0.0.1")
@@ -558,7 +669,18 @@ def main():
     # 启动时先验证一次状态采集，配置/缓存异常能立刻暴露
     build_state()
 
-    server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
+    try:
+        server = DashboardServer((args.host, args.port), DashboardHandler)
+    except OSError as e:
+        if e.errno in (48, 98):  # macOS 48 / Linux 98: address already in use
+            pid = _find_port_pid(args.host, args.port)
+            print(f"\n  端口 {args.port} 已被占用，无法启动看板。")
+            if pid:
+                print(f"  占用进程 PID: {pid}（可用 'kill {pid}' 停止它，或换一个端口）")
+            print(f"  换端口启动: python3 dashboard.py --port {args.port + 1}\n")
+            sys.exit(1)
+        raise
+
     url = f"http://{args.host}:{args.port}/"
     logger.info(f"SkyQuant 看板已启动: {url}")
     print(f"\n  SkyQuant 回测看板: {url}\n  (Ctrl+C 停止；回测报告生成后刷新页面即可点击)\n")

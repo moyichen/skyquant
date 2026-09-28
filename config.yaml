@@ -27,7 +27,9 @@ stock_filter:
       lookback_days: 0
       min_avg_amount_yi: 0.5
     turnover_filter:
-      min_avg_turn: 0.2
+      min_avg_turn: 0.2          # 常规标的日均换手率下限（%）
+      megacap_min_circ_mv_yi: 1000.0  # 流通市值≥1000亿启用降档；0 关闭
+      megacap_min_avg_turn: 0.1      # 千亿大盘股日均换手率下限（%）
     liquidity_filter:
       max_zero_volume_ratio: 0.01
       max_gap_days: 20
@@ -54,31 +56,37 @@ stock_list:
   sector: 军工
   sector_index: 931066.CSI
   sector_index_name: 军工龙头
+  regime: breakout
 - code: '000001'
   name: 平安银行
   sector: 银行
   sector_index: 000947.CSI
   sector_index_name: 内地银行
+  regime: trend
 - code: '601166'
   name: 兴业银行
   sector: 银行
   sector_index: 000947.CSI
   sector_index_name: 内地银行
+  regime: trend
 - code: '601138'
   name: 工业富联
   sector: 电子
   sector_index: 930652.CSI
   sector_index_name: CS电子
+  regime: breakout
 - code: '601816'
   name: 京沪高铁
   sector: 高铁
   sector_index: 930621.CSI
   sector_index_name: CSSW高铁
+  regime: range
 - code: '002475'
   name: 立讯精密
   sector: 电子
   sector_index: 930652.CSI
   sector_index_name: CS电子
+  regime: breakout
 - code: '000725'
   name: 京东方A
   sector: 电子
@@ -113,6 +121,7 @@ stock_list:
   sector: 化工
   sector_index: 000813.CSI
   sector_index_name: 细分化工
+  regime: range
 - code: 000938
   name: 紫光股份
   sector: 计算机
@@ -123,11 +132,13 @@ stock_list:
   sector: 稀土
   sector_index: 930598.CSI
   sector_index_name: 稀土产业
+  regime: breakout
 - code: '603173'
   name: 福斯达
   sector: 机械设备
   sector_index: 000988.CSI
   sector_index_name: 全指工业
+  regime: breakout
 - code: '002222'
   name: 福晶科技
   sector: 电子
@@ -139,21 +150,25 @@ stock_list:
   sector: 白酒
   sector_index: 930622.CSI
   sector_index_name: CSSW白酒
+  regime: breakout
 - code: '002774'
   name: 快意电梯
   sector: 机械设备
   sector_index: 000988.CSI
   sector_index_name: 全指工业
+  regime: breakout
 - code: '601127'
   name: 赛力斯
   sector: 汽车
   sector_index: 930607.CSI
   sector_index_name: 中证汽车
+  regime: breakout
 - code: '600900'
   name: 长江电力
   sector: 公用事业
   sector_index: 000995.CSI
   sector_index_name: 全指公用
+  regime: trend
 - code: 000792
   name: 盐湖股份
   sector: 化工
@@ -164,6 +179,7 @@ stock_list:
   sector: 计算机
   sector_index: 930651.CSI
   sector_index_name: CS计算机
+  regime: range
 - code: '601633'
   name: 长城汽车
   sector: 汽车
@@ -175,21 +191,25 @@ stock_list:
   sector: 有色
   sector_index: 930708.CSI
   sector_index_name: 中证有色
+  regime: breakout
 - code: '000651'
   name: 格力电器
   sector: 家电
   sector_index: 931021.CSI
   sector_index_name: 家电龙头
+  regime: trend
 - code: '601899'
   name: 紫金矿业
   sector: 有色
   sector_index: 930708.CSI
   sector_index_name: 中证有色
+  regime: breakout
 - code: '600690'
   name: 海尔智家
   sector: 家电
   sector_index: 931021.CSI
   sector_index_name: 家电龙头
+  regime: range
 - code: 002594
   name: 比亚迪
   sector: 汽车
@@ -200,6 +220,7 @@ stock_list:
   sector: 有色
   sector_index: 930708.CSI
   sector_index_name: 中证有色
+  regime: breakout
 strategy_params:
   '000725':
     trend:

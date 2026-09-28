@@ -58,7 +58,9 @@ DEFAULT_PAIRLIST_FILTERS = {
     # A-share extension: turnover-rate floor (kept permissive; mega-caps naturally
     # have low turn, the amount floor in volume_filter is the main gate)
     "turnover_filter": {
-        "min_avg_turn": 0.2,          # min average daily turnover rate, in percent
+        "min_avg_turn": 0.2,             # 常规标的日均换手率下限（%）
+        "megacap_min_circ_mv_yi": 1000.0,  # 流通市值≥该值（亿）启用大盘股降档；0 关闭
+        "megacap_min_avg_turn": 0.1,     # 千亿大盘股日均换手率下限（%）
     },
     # A-share extension: tradeability continuity (zero-volume bars / long suspensions)
     "liquidity_filter": {
@@ -152,12 +154,27 @@ def compute_pairlist_metrics(df: pd.DataFrame, volume_lookback: int = 0) -> dict
     avg_amount_yi = float(amount_window.mean() / 100_000.0) if not amount_window.empty else 0.0
     avg_turn = float(turn.mean()) if not turn.empty else 0.0
 
+    # 流通市值（亿）：优先用 daily_basic 官方 circ_mv（单位万元，/1e4 转亿），
+    # 取近 60 个交易日非空均值；旧缓存无该列时回退到 amount/(turn/100) 推导。
+    avg_circ_mv_yi = 0.0
+    if "circ_mv" in df.columns:
+        circ = pd.to_numeric(df["circ_mv"], errors="coerce").tail(60).dropna()
+        if not circ.empty:
+            avg_circ_mv_yi = float(circ.mean() / 10_000.0)
+    if avg_circ_mv_yi <= 0 and not turn.empty and not amount.empty:
+        recent = pd.DataFrame({"amount": amount, "turn": turn}).tail(60)
+        valid = recent[recent["turn"] > 0]
+        if not valid.empty:
+            # amount 单位千元，circ_mv(千元) = amount/(turn/100)，/1e5 转亿
+            avg_circ_mv_yi = float((valid["amount"] / (valid["turn"] / 100.0) / 100_000.0).mean())
+
     return {
         "bars": int(len(df)),
         "zero_volume_ratio": round(zero_volume_ratio, 4),
         "max_gap_days": max_gap_days,
         "avg_amount_yi": round(avg_amount_yi, 3),
         "avg_turn": round(avg_turn, 3),
+        "avg_circ_mv_yi": round(avg_circ_mv_yi, 1),
         "mean_close": round(float(close.mean()), 3),
     }
 
@@ -191,10 +208,15 @@ def evaluate_pairlist_filters(metrics: dict, name: str, filters: dict) -> tuple:
     min_amount = volume.get("min_avg_amount_yi", 0.0)
     if metrics["avg_amount_yi"] < min_amount:
         fails.append(f"[VolumeFilter] amount {metrics['avg_amount_yi']:.2f}yi < {min_amount}yi")
-    # turnover extension
+    # turnover extension（按流通市值分档：千亿大盘股换手率天然低，降档处理）
     min_turn = turnover.get("min_avg_turn", 0.0)
-    if metrics["avg_turn"] < min_turn:
-        fails.append(f"[turnover] turn {metrics['avg_turn']:.2f}% < {min_turn}%")
+    mega_mv = float(turnover.get("megacap_min_circ_mv_yi", 0.0) or 0.0)
+    mega_min_turn = float(turnover.get("megacap_min_avg_turn", min_turn))
+    is_megacap = mega_mv > 0 and metrics.get("avg_circ_mv_yi", 0.0) >= mega_mv
+    turn_floor = mega_min_turn if is_megacap else min_turn
+    if metrics["avg_turn"] < turn_floor:
+        tier = f"megacap(mv>={mega_mv:.0f}yi)" if is_megacap else "standard"
+        fails.append(f"[turnover] turn {metrics['avg_turn']:.2f}% < {turn_floor}% ({tier})")
     # PriceFilter
     low_price = price.get("low_price", 0.0)
     if metrics["mean_close"] < low_price:

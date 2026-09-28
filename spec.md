@@ -216,7 +216,8 @@ skyquant/
   - `age_filter.min_days_listed`（AgeFilter，窗口内交易日数下限）
   - `price_filter.low_price`（PriceFilter，均价下限）
   - `volume_filter.lookback_days` / `volume_filter.min_avg_amount_yi`（VolumeFilter，0=全窗口；日均成交额，亿元）
-  - `turnover_filter.min_avg_turn`（A 股扩展：日均换手率）
+  - `turnover_filter.min_avg_turn`（A 股扩展：日均换手率，默认 0.2%）
+  - `turnover_filter.megacap_min_circ_mv_yi` / `megacap_min_avg_turn`（大盘股降档：流通市值≥1000 亿时换手率下限降至 0.1%；市值取 daily_basic 官方 `circ_mv` 近 60 日均值（万元），旧缓存无列时回退 amount/(turn/100) 推导；阈值设 0 关闭）
   - `liquidity_filter.max_zero_volume_ratio` / `max_gap_days`（A 股扩展：零成交占比 / 最长停牌缺口）
   - 常驻名称规则：ST/*ST/退 名称剔除（自定义过滤器，freqtrade 无内建对应）
 - trend 趋势门（仅 --screen）：ADX 均值/强趋势占比/多头排列占比/均线年交叉/Kaufman 效率比/价格振幅/最长多头连涨；阈值 config `stock_filter.trend`

@@ -102,6 +102,7 @@ Pairlist Filters（`DEFAULT_PAIRLIST_FILTERS`，config `stock_filter.pairlist` �
 | PriceFilter | `price_filter.low_price` | 1.0 | 均价下限（剔除仙股/退市风险价区） |
 | VolumeFilter | `volume_filter.min_avg_amount_yi`（`lookback_days`，0=全窗口） | 0.5 | 日均成交额下限（亿元；Tushare amount 单位千元，/100_000） |
 | A 股扩展 | `turnover_filter.min_avg_turn` | 0.2 | 日均换手率下限（%，0.2 即 0.2%；过低会误杀大盘股） |
+| A 股扩展 | `turnover_filter.megacap_min_circ_mv_yi` / `megacap_min_avg_turn` | 1000 / 0.1 | 流通市值≥1000 亿的大盘股换手率下限降档至 0.1%（市值取 daily_basic 官方 `circ_mv` 近 60 日均值，单位万元/1e4 转亿；旧缓存无该列时回退 amount/(turn/100) 推导；0 关闭降档） |
 | A 股扩展 | `liquidity_filter.max_zero_volume_ratio` | 0.01 | 零成交量 K 线占比上限（停牌） |
 | A 股扩展 | `liquidity_filter.max_gap_days` | 20 | 相邻 K 线最大日历日缺口（长期停牌） |
 | 自定义名称规则 | 常驻无配置 | ST/*ST/退 | 名称含 ST 或「退」直接剔除（freqtrade 无内建对应过滤器） |
