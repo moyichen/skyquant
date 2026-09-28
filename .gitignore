@@ -2,3 +2,5 @@ __pycache__/
 output/
 *.pyc
 .DS_Store
+.trae/
+
