@@ -59,6 +59,17 @@ GRID_OBJECTIVE_COLUMN = {
 }
 DEFAULT_OPTIMIZE_METRIC = "profit_rate"
 
+# ===================== Optimization mode (grid | tpe) =====================
+# freqtrade hyperopt-style: grid enumerates the full PARAM_GRID; tpe samples
+# `hyperopt_epochs` points from the same discrete space via a TPE surrogate
+# (bayesian), which converges much faster on large spaces at the cost of
+# exhaustiveness. Both modes emit the same param_optimize_result.csv schema.
+OPT_MODES = ("grid", "tpe")
+DEFAULT_OPT_MODE = "grid"
+DEFAULT_HYPEROPT_EPOCHS = 500
+DEFAULT_HYPEROPT_SEED = 42
+DEFAULT_HYPEROPT_BATCH_SIZE = 64
+
 
 def resolve_optimize_metric(cfg) -> str:
     """Read and validate opt_pipeline.optimize_metric from config."""
@@ -66,6 +77,24 @@ def resolve_optimize_metric(cfg) -> str:
     if metric not in OPTIMIZE_OBJECTIVE_COLUMN:
         raise ValueError(f"Unknown optimize_metric '{metric}', choose from {list(OPTIMIZE_OBJECTIVE_COLUMN)}")
     return metric
+
+
+def resolve_opt_mode(cfg, cli_mode=None) -> str:
+    """Resolve optimization mode: CLI --mode > config opt_pipeline.opt_mode > grid."""
+    mode = cli_mode or str((cfg or {}).get("opt_pipeline", {}).get("opt_mode", DEFAULT_OPT_MODE))
+    if mode not in OPT_MODES:
+        raise ValueError(f"Unknown opt_mode '{mode}', choose from {list(OPT_MODES)}")
+    return mode
+
+
+def resolve_hyperopt_cfg(cfg, cli_epochs=None, cli_seed=None) -> dict:
+    """Resolve TPE settings: CLI overrides config opt_pipeline.hyperopt_*."""
+    section = (cfg or {}).get("opt_pipeline", {})
+    return {
+        "epochs": int(cli_epochs or section.get("hyperopt_epochs", DEFAULT_HYPEROPT_EPOCHS)),
+        "seed": int(cli_seed if cli_seed is not None else section.get("hyperopt_seed", DEFAULT_HYPEROPT_SEED)),
+        "batch_size": int(section.get("hyperopt_batch_size", DEFAULT_HYPEROPT_BATCH_SIZE)),
+    }
 
 
 def parse_code_list(raw: str) -> list:
@@ -453,6 +482,22 @@ class BacktestRunner:
                 raise RuntimeError(f"combo failed inside chunk:\n{r['__error__']}")
         return results
 
+    def run_combos(self, df: pd.DataFrame, strategy_id: str, param_list: list, maxcpu: int = 1) -> list:
+        """Backtest an explicit list of param dicts for one strategy on one data
+        slice; return a list of metrics dicts aligned with param_list.
+
+        Shared executor for grid enumeration (optimize) and TPE sampling
+        (param_optimize._tpe_search)."""
+        jobs = [(strategy_id, params) for params in param_list]
+        return self._map_jobs(
+            jobs,
+            _init_combo_worker,
+            (df, self.initial_capital, self.comm_config),
+            _worker_run_combo,
+            lambda job: _run_single_combo((df, job[0], job[1], self.initial_capital, self.comm_config)),
+            maxcpu,
+        )
+
     def optimize(self, df: pd.DataFrame, strategy_id: str, param_grid: dict, maxcpu: int = 1) -> list:
         """Enumerate the parameter grid in the parent and dispatch each combination
         to a multiprocessing Pool; return list of (param_dict, metrics_dict).
@@ -468,15 +513,7 @@ class BacktestRunner:
         """
         keys = list(param_grid.keys())
         param_combos = [dict(zip(keys, combo)) for combo in itertools.product(*param_grid.values())]
-        jobs = [(strategy_id, params) for params in param_combos]
-        results = self._map_jobs(
-            jobs,
-            _init_combo_worker,
-            (df, self.initial_capital, self.comm_config),
-            _worker_run_combo,
-            lambda job: _run_single_combo((df, job[0], job[1], self.initial_capital, self.comm_config)),
-            maxcpu,
-        )
+        results = self.run_combos(df, strategy_id, param_combos, maxcpu=maxcpu)
         return list(zip(param_combos, results))
 
     def run_train_test_batch(self, df_train, df_test, jobs, maxcpu=1):

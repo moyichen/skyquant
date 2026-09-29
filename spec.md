@@ -316,7 +316,7 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 
 ### 4\.6 opt\_pipeline 参数优化规范
 
-- param\_optimize：全网格暴力搜索。目标标的解析优先级 `--stock-list` > `--all-stocks` > 回归标的集（默认），由 `common.resolve_target_codes` 统一实现（末尾应用 `stock_blacklist`）；不在 config.yaml `stock_list` 中的代码直接报错。每标的按 `routed_strategies` 只寻优 regime 路由到的策略；网格结果输出多指标列（final_capital/profit/profit_rate/sharpe_ratio/max_drawdown/calmar_ratio），按 config `opt_pipeline.optimize_metric`（profit_rate/sharpe/calmar）对应的 GRID 目标列降序。
+- param\_optimize：参数搜索，双模式（`--mode` 覆盖 config `opt_pipeline.opt_mode`）：**grid**=全网格暴力搜索（默认）；**tpe**=hyperopt TPE 贝叶斯采样，按 `hyperopt_epochs` 从同一离散空间采样。目标标的解析优先级 `--stock-list` > `--all-stocks` > 回归标的集（默认），由 `common.resolve_target_codes` 统一实现（末尾应用 `stock_blacklist`）；不在 config.yaml `stock_list` 中的代码直接报错。每标的按 `routed_strategies` 只寻优 regime 路由到的策略；结果输出多指标列（final_capital/profit/profit_rate/sharpe_ratio/max_drawdown/calmar_ratio），按 config `opt_pipeline.optimize_metric`（profit_rate/sharpe/calmar）对应的 GRID 目标列降序。
 
 - out\_sample\_verify：剔除训练过拟合（训练/测试拆分）。按 `opt_pipeline.out_sample_train_end` 切分数据为训练段 / 测试段，分别回测，若训练收益率 − 测试收益率 > `opt_pipeline.out_sample_overfit_threshold` 则判为过拟合剔除。当训练段或测试段 K 线数 < 60（SMA60 最小周期下限）时跳过该标的并打印 `[ERROR]` 提示与改进方法。
 
@@ -342,6 +342,12 @@ cerebro.addanalyzer(bt.analyzers.SQN, _name="sqn")
 | rolling\_min\_train\_bars | 200 | 训练段最低 K 线数 |
 | rolling\_min\_test\_bars | 100 | 测试段最低 K 线数（>60，不可低于 SMA60 minperiod） |
 | optimize\_metric | profit_rate | 寻优/聚合排序目标：profit_rate / sharpe / calmar |
+| opt\_mode | grid | 寻优搜索模式：grid=全量枚举（确定性最强）/ tpe=hyperopt TPE 贝叶斯采样（大空间快速收敛）；CLI `--mode` 覆盖 |
+| hyperopt\_epochs | 500 | tpe 模式总评估次数（freqtrade hyperopt `--epochs`）；CLI `--epochs` 覆盖 |
+| hyperopt\_seed | 42 | tpe 随机种子，固定后同配置同数据结果可复现；CLI `--seed` 覆盖 |
+| hyperopt\_batch\_size | 64 | tpe 每批建议点数；批间更新 TPE 后验。≥2000 才会触发多 chunk 并行 |
+
+**tpe 模式说明**（对标 freqtrade hyperopt）：搜索空间复用 `PARAM_GRID` 离散网格（hp.choice 逐维映射），loss = `-optimize_metric`（非有限值罚 TPE_BAD_LOSS=1e3）；批量 ask/tell——每批候选经 `BacktestRunner.run_combos` 走 chunk 子进程回测（隔离+断点续跑），批间更新 Trials；重复采样点签名校验去重。产出与 grid 完全同构的 `param_optimize_result.csv`，下游四阶段（外样本/滚动/聚合/导出）零改动。
 
 **start\_date 下限约束**（end\_date=2026-09-21、默认滚动参数）：
 

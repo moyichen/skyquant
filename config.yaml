@@ -17,6 +17,12 @@ opt_pipeline:
   rolling_min_train_bars: 200
   rolling_min_test_bars: 100
   optimize_metric: profit_rate
+  # 寻优模式：grid=全量网格枚举（默认，结果确定性最强）；tpe=hyperopt TPE 贝叶斯采样，
+  # 适合大空间快速收敛（对标 freqtrade hyperopt --epochs）。skyquant opt --mode 可临时覆盖。
+  opt_mode: grid
+  hyperopt_epochs: 500        # tpe 模式总评估次数（freqtrade --epochs）
+  hyperopt_seed: 42           # tpe 随机种子，固定后同配置结果可复现
+  hyperopt_batch_size: 64     # 每批建议点数；批间更新 TPE 后验。>=2000 才会触发多块并行
 stock_filter:
   pairlist:
     age_filter:

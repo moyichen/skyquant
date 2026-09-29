@@ -1,5 +1,13 @@
-# Grid parameter optimization: enumerate each strategy's PARAM_GRID with a
-# self-built multiprocessing Pool, keeping only profitable parameter combinations.
+# Parameter optimization stage with two search modes (config opt_pipeline.opt_mode,
+# CLI --mode overrides):
+#   grid — enumerate each strategy's PARAM_GRID exhaustively, keeping only
+#          profitable parameter combinations.
+#   tpe  — hyperopt TPE (freqtrade hyperopt-style): sample `hyperopt_epochs`
+#          points from the SAME discrete PARAM_GRID space with a bayesian
+#          surrogate; converges much faster on large spaces at the cost of
+#          exhaustiveness. Reproducible via opt_pipeline.hyperopt_seed.
+# Both modes emit the identical param_optimize_result.csv schema, so the
+# downstream stages (out-sample / rolling / aggregate / export) are unchanged.
 #
 # Default target universe is REGRESSION_STOCKS (fast iteration gate after any
 # strategy/param change); a full-pool run must be triggered explicitly with
@@ -16,13 +24,16 @@
 #   profit_rate (default) | sharpe | calmar
 import argparse
 
+import numpy as np
 import pandas as pd
 from common import (
     GRID_OBJECTIVE_COLUMN,
     PARAM_GRID_CSV,
     BacktestRunner,
     load_regime_map,
+    resolve_hyperopt_cfg,
     resolve_maxcpu,
+    resolve_opt_mode,
     resolve_optimize_metric,
     resolve_target_codes,
     routed_strategies,
@@ -91,9 +102,107 @@ STRATEGY_DESC = {
     "breakout": "唐奇安通道突破（高波动市，绕过趋势过滤）",
 }
 
+# Loss assigned to failed / non-finite evaluations in TPE mode (hyperopt
+# minimizes; the value must stay finite and clearly worse than any real run)
+TPE_BAD_LOSS = 1e3
+
+
+def _tpe_search(runner, df, strategy_id, grid, epochs, seed, batch_size, objective_col, maxcpu):
+    """Sample `epochs` points from the discrete `grid` with hyperopt TPE.
+
+    freqtrade hyperopt-style batched ask/tell: each batch of `batch_size`
+    candidates is suggested from the current Trials posterior, backtested in one
+    go via BacktestRunner.run_combos (chunked subprocess execution, isolated +
+    resumable), then written back so the next batch is model-guided. Loss is
+    -objective (optimize_metric is a maximize metric); non-finite results map to
+    TPE_BAD_LOSS. Repeated suggestions are deduped through a loss cache so each
+    distinct point is backtested at most once. `seed` fixes the RNG so identical
+    config + data reproduces identical candidates (and hits the chunk cache on
+    rerun).
+
+    Returns a list of (param_dict, metrics_dict), same shape as
+    BacktestRunner.optimize, in first-evaluation order.
+    """
+    import warnings
+
+    with warnings.catch_warnings():
+        # hyperopt imports pkg_resources (deprecated shim on Python 3.14); the
+        # warning is noise — suppress only during import.
+        warnings.simplefilter("ignore")
+        from hyperopt import (
+            JOB_STATE_DONE,
+            STATUS_OK,
+            Domain,
+            Trials,
+            hp,
+            space_eval,
+            tpe,
+        )
+
+    space = {name: hp.choice(name, list(values)) for name, values in grid.items()}
+    # fn is a placeholder for Domain construction; actual evaluation is batched
+    # through BacktestRunner, not through hyperopt's sequential fmin.
+    domain = Domain(lambda params: 0.0, space)
+    trials = Trials()
+    rng = np.random.default_rng(seed)
+    cache = {}  # param signature -> (params, loss, metrics); dedupes repeated suggestions
+    evaluated = 0
+    batch_no = 0
+
+    while evaluated < epochs:
+        k = min(batch_size, epochs - evaluated)
+        new_trials = tpe.suggest(trials.new_trial_ids(k), domain, trials, rng)
+
+        params_list, sigs = [], []
+        for t in new_trials:
+            vals = {key: v[0] for key, v in t["misc"]["vals"].items()}
+            params = space_eval(space, vals)
+            params_list.append(params)
+            sigs.append(tuple(sorted((key, repr(v)) for key, v in params.items())))
+
+        # Backtest only points never evaluated before (within-run + cache)
+        pending, batch_seen = [], set()
+        for i, sig in enumerate(sigs):
+            if sig not in cache and sig not in batch_seen:
+                batch_seen.add(sig)
+                pending.append(i)
+        if pending:
+            results = runner.run_combos(df, strategy_id, [params_list[i] for i in pending], maxcpu=maxcpu)
+            for i, metrics in zip(pending, results):
+                value = metrics.get(objective_col)
+                loss = -float(value) if value is not None and np.isfinite(value) else TPE_BAD_LOSS
+                cache[sigs[i]] = (params_list[i], loss, metrics)
+
+        # Tell: write every suggested trial back (cache hits reuse the stored loss)
+        for t, sig in zip(new_trials, sigs):
+            t["result"] = {"loss": cache[sig][1], "status": STATUS_OK}
+            t["state"] = JOB_STATE_DONE
+        trials.insert_trial_docs(new_trials)
+        trials.refresh()
+
+        evaluated += k
+        batch_no += 1
+        best = -trials.best_trial["result"]["loss"]
+        print(
+            f"  [tpe] batch {batch_no}: {evaluated}/{epochs} evals ({len(pending)} new), "
+            f"best {objective_col}={best:.4f}",
+            flush=True,
+        )
+
+    return [(params, metrics) for params, _loss, metrics in cache.values()]
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Grid parameter optimization")
+    parser = argparse.ArgumentParser(
+        description="Parameter optimization (grid or TPE)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "mode:  grid — enumerate PARAM_GRID exhaustively (default, deterministic)\n"
+            "       tpe  — hyperopt TPE bayesian sampling (freqtrade --epochs style)\n"
+            "             epochs/seed/batch_size read from config opt_pipeline.*,\n"
+            "             overridable via --epochs / --seed."
+        ),
+    )
     parser.add_argument(
         "--maxcpu",
         type=int,
@@ -111,14 +220,35 @@ def main():
         action="store_true",
         help="Optimize all stocks in config.yaml (default: regression stocks only)",
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=None,
+        help="Optimization mode: grid or tpe (overrides config opt_pipeline.opt_mode)",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help="TPE total evaluation count (overrides config opt_pipeline.hyperopt_epochs)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="TPE random seed (overrides config opt_pipeline.hyperopt_seed)",
+    )
     args = parser.parse_args()
 
     maxcpu = resolve_maxcpu(args.maxcpu)
 
     runner = BacktestRunner()
-    optimize_metric = resolve_optimize_metric(runner.data_provider.cfg)
+    cfg = runner.data_provider.cfg
+    optimize_metric = resolve_optimize_metric(cfg)
     sort_col = GRID_OBJECTIVE_COLUMN[optimize_metric]
-    valid_codes = resolve_target_codes(args, runner.data_provider.cfg)
+    mode = resolve_opt_mode(cfg, cli_mode=args.mode)
+    hyperopt_cfg = resolve_hyperopt_cfg(cfg, cli_epochs=args.epochs, cli_seed=args.seed)
+    valid_codes = resolve_target_codes(args, cfg)
     # Regime -> strategy routing table (output/stock_filter.csv); empty when the
     # filter layer has not run, in which case all active strategies are optimized.
     regime_map = load_regime_map()
@@ -127,7 +257,7 @@ def main():
 
     result_rows = []
 
-    # ---- Pre-run summary: list grid size per stock/strategy before starting ----
+    # ---- Pre-run summary ----
     plan = []  # (code, strategy_id, grid, n_combos)
     total_combos = 0
     for code in valid_codes:
@@ -144,27 +274,55 @@ def main():
             plan.append((code, strategy_id, grid, n_combos))
             total_combos += n_combos
 
+    is_tpe = mode == "tpe"
     print("=" * 70)
-    print(f"网格寻优计划：{len(plan)} 个 标的×策略 组合，共 {total_combos:,} 个参数组合")
-    print(f"排序指标: {optimize_metric}  |  并发: {maxcpu}  |  分块: {BacktestRunner.JOBS_PER_CHUNK}/块, 最多 {BacktestRunner.MAX_CONCURRENT_CHUNKS} 并行块")
+    if is_tpe:
+        print(f"TPE 寻优计划：{len(plan)} 个 标的×策略 组合，每组合 epochs={hyperopt_cfg['epochs']}")
+        print(f"排序指标: {optimize_metric}  |  模式: {mode}  |  seed={hyperopt_cfg['seed']}  |  batch={hyperopt_cfg['batch_size']}")
+    else:
+        print(f"网格寻优计划：{len(plan)} 个 标的×策略 组合，共 {total_combos:,} 个参数组合")
+        print(f"排序指标: {optimize_metric}  |  模式: {mode}  |  并发: {maxcpu}")
+    print(f"分块: {BacktestRunner.JOBS_PER_CHUNK}/块, 最多 {BacktestRunner.MAX_CONCURRENT_CHUNKS} 并行块")
     print("-" * 70)
     for code, strategy_id, grid, n_combos in plan:
         dims = len(grid)
         desc = STRATEGY_DESC.get(strategy_id, "")
-        print(f"  {code}  {strategy_id:8s}  {dims:2d}维 {n_combos:>6,} 组合  | {desc}")
+        combo_str = f"{hyperopt_cfg['epochs']:,} epochs" if is_tpe else f"{n_combos:>6,} 组合"
+        print(f"  {code}  {strategy_id:8s}  {dims:2d}维 {combo_str}  | {desc}")
     print("-" * 70)
-    print(f"总计: {total_combos:,} 组合  (按 {BacktestRunner.JOBS_PER_CHUNK}/块 分块 → "
-          f"{(total_combos + BacktestRunner.JOBS_PER_CHUNK - 1) // BacktestRunner.JOBS_PER_CHUNK} 块)")
+    if is_tpe:
+        total_evals = len(plan) * hyperopt_cfg["epochs"]
+        batches_per = -(-hyperopt_cfg["epochs"] // hyperopt_cfg["batch_size"])  # ceil
+        print(f"总计: {total_evals:,} 回测评估 (每批 {hyperopt_cfg['batch_size']} → "
+              f"{batches_per} 批/组合)")
+    else:
+        print(f"总计: {total_combos:,} 组合  (按 {BacktestRunner.JOBS_PER_CHUNK}/块 分块 → "
+              f"{(total_combos + BacktestRunner.JOBS_PER_CHUNK - 1) // BacktestRunner.JOBS_PER_CHUNK} 块)")
     print("=" * 70)
 
     for code, strategy_id, grid, n_combos in plan:
         df = cache_map[code]
-        print(f"\n>>> {code} {strategy_id} ({n_combos:,} 组合) ...")
-        try:
-            results = runner.optimize(df, strategy_id, grid, maxcpu=maxcpu)
-        except Exception as e:
-            print(f"Exception {code} {strategy_id}: {e}")
-            continue
+        if is_tpe:
+            print(f"\n>>> {code} {strategy_id} (TPE {hyperopt_cfg['epochs']} epochs) ...")
+            try:
+                results = _tpe_search(
+                    runner, df, strategy_id, grid,
+                    epochs=hyperopt_cfg["epochs"],
+                    seed=hyperopt_cfg["seed"],
+                    batch_size=hyperopt_cfg["batch_size"],
+                    objective_col=sort_col,
+                    maxcpu=maxcpu,
+                )
+            except Exception as e:
+                print(f"Exception {code} {strategy_id}: {e}")
+                continue
+        else:
+            print(f"\n>>> {code} {strategy_id} ({n_combos:,} 组合) ...")
+            try:
+                results = runner.optimize(df, strategy_id, grid, maxcpu=maxcpu)
+            except Exception as e:
+                print(f"Exception {code} {strategy_id}: {e}")
+                continue
         for param_dict, metrics in results:
             final_value = metrics["final_value"]
             profit = final_value - runner.initial_capital
@@ -187,7 +345,7 @@ def main():
         # Profitability gate first, then rank by the configured objective (best on top)
         res_df = res_df[res_df["profit_rate"] > 0].sort_values(sort_col, ascending=False)
     write_stage_csv(PARAM_GRID_CSV, res_df, valid_codes)
-    print(f"Grid optimization results written to: {PARAM_GRID_CSV} ({len(res_df)} rows, objective={optimize_metric})")
+    print(f"Parameter optimization results written to: {PARAM_GRID_CSV} ({len(res_df)} rows, objective={optimize_metric}, mode={mode})")
 
 
 if __name__ == "__main__":

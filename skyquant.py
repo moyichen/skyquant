@@ -5,6 +5,7 @@ Usage:
     python3 skyquant dashboard [--port 8765] [--no-browser]
     python3 skyquant backtest [--stock-list 000725,601633] [--strategy trend] [--force-refresh]
     python3 skyquant opt [--stock-list 000725,601633] [--all-stocks] [--maxcpu 0]
+                         [--mode grid|tpe] [--epochs N] [--seed N] [--no-apply]
     python3 skyquant fetch [--stock-list 000725,601633] [--force-refresh]
     python3 skyquant filter [--stock-list 000725,601633]
     python3 skyquant live [--stock-list 000725,601633] [--force-refresh]
@@ -89,19 +90,20 @@ def cmd_backtest(args):
 
 
 def cmd_opt(args):
-    """Full optimization pipeline on cached data: grid -> out-of-sample ->
+    """Full optimization pipeline on cached data: search (grid|tpe) -> out-of-sample ->
     rolling -> aggregate -> export/apply param set.
 
-    Reads cached market data (run `fetch` first if data is stale), enumerates
-    the strategy PARAM_GRID, validates via out-of-sample and rolling windows,
-    aggregates the most stable optimal params, archives them as a timestamped
-    param set under params/experiments and (unless --no-apply) merges the
-    qualified entries into params/active.yaml. Exits when persisted — no
-    backtest or live review.
+    Reads cached market data (run `fetch` first if data is stale), searches the
+    strategy PARAM_GRID (exhaustively in grid mode, or TPE-sampled with
+    --mode tpe / config opt_pipeline.opt_mode), validates via out-of-sample and
+    rolling windows, aggregates the most stable optimal params, archives them as
+    a timestamped param set under params/experiments and (unless --no-apply)
+    merges the qualified entries into params/active.yaml. Exits when persisted —
+    no backtest or live review.
     """
     opt_dir = PROJECT_ROOT / "opt_pipeline"
     stages = [
-        ("Grid parameter optimization", "param_optimize.py"),
+        ("Parameter optimization", "param_optimize.py"),
         ("Out-of-sample validation", "out_sample_verify.py"),
         ("Rolling window stability validation", "rolling_window_verify.py"),
         ("Aggregate optimal parameters", "aggregate_best_param.py"),
@@ -113,6 +115,13 @@ def cmd_opt(args):
             cmd += ["--stock-list", args.stock_list]
         elif args.all_stocks:
             cmd += ["--all-stocks"]
+        if script == "param_optimize.py":
+            if args.mode:
+                cmd += ["--mode", args.mode]
+            if args.epochs:
+                cmd += ["--epochs", str(args.epochs)]
+            if args.seed is not None:
+                cmd += ["--seed", str(args.seed)]
         if script == "export_param_set.py" and args.no_apply:
             cmd += ["--no-apply"]
         if args.maxcpu and args.maxcpu != 0:
@@ -286,7 +295,7 @@ def cmd_all(args):
 
     # Steps 3-7: per-symbol optimization loop
     OPT_STAGES = [
-        ("Grid parameter optimization", "param_optimize.py"),
+        ("Parameter optimization", "param_optimize.py"),
         ("Out-of-sample validation", "out_sample_verify.py"),
         ("Rolling window stability validation", "rolling_window_verify.py"),
         ("Aggregate optimal parameters", "aggregate_best_param.py"),
@@ -405,6 +414,12 @@ def main():
     p.add_argument("--stock-list", type=str, default=None)
     p.add_argument("--all-stocks", action="store_true")
     p.add_argument("--maxcpu", type=int, default=0)
+    p.add_argument("--mode", type=str, default=None, choices=["grid", "tpe"],
+                   help="Search mode: grid=exhaustive enumeration (default from config opt_pipeline.opt_mode), tpe=hyperopt TPE bayesian sampling")
+    p.add_argument("--epochs", type=int, default=None,
+                   help="TPE total evaluation count (overrides config opt_pipeline.hyperopt_epochs)")
+    p.add_argument("--seed", type=int, default=None,
+                   help="TPE random seed (overrides config opt_pipeline.hyperopt_seed)")
     p.add_argument("--no-apply", action="store_true",
                    help="Only archive the optimal set to params/experiments without merging into active.yaml")
     p.set_defaults(func=cmd_opt)

@@ -150,7 +150,7 @@ trend 指标（config `stock_filter.trend`）：
 | strategy/range.py | 震荡/均值回归策略（合并 boll_ma+short_reversal）：布林下轨或急跌超阈值开仓 |
 | strategy/breakout.py | 突破策略（新增）：唐奇安 N 日新高突破开仓 |
 | opt_pipeline/common.py | 流水线共享：BacktestRunner（返回多指标 dict）、REGRESSION_STOCKS 默认标的集、resolve_target_codes（含黑名单）/write_stage_csv、优化目标解析（profit_rate/sharpe/calmar）、regime 路由、参数提取工具 |
-| opt_pipeline/param_optimize.py | 网格参数寻优（自建 multiprocessing.Pool 多进程；按 regime 只跑路由到的策略；输出 6 指标列） |
+| opt_pipeline/param_optimize.py | 参数寻优双模式：grid 全量枚举 / tpe hyperopt 贝叶斯采样（`--mode`；chunk 子进程并行；按 regime 只跑路由策略；输出 6 指标列，两模式同 schema） |
 | opt_pipeline/out_sample_verify.py | 外样本校验（剔除过拟合；train/test 双段多指标） |
 | opt_pipeline/rolling_window_verify.py | 滚动窗口稳定性校验（平均收益/夏普/卡玛/回撤 5 列） |
 | opt_pipeline/aggregate_best_param.py | 最优参数聚合（按 config optimize_metric 选排序列，avg_test_profit>0 门槛） |
@@ -507,7 +507,7 @@ def run_step(name, cwd, cmd)    # subprocess.Popen 执行, 非零退出码->sys.
 **子命令**：
 - `dashboard`：启动本地看板（默认 127.0.0.1:8765，--no-browser 可关自动打开）
 - `backtest`：单次回测（透传 main.py，支持 --stock-list/--strategy/--force-refresh）
-- `opt`：寻优流水线（param_optimize→out_sample→rolling→aggregate→write_config，支持 --stock-list/--all-stocks/--maxcpu）
+- `opt`：寻优流水线（param_optimize→out_sample→rolling→aggregate→export_param_set，支持 --stock-list/--all-stocks/--maxcpu/--no-apply；`--mode grid|tpe` 选择搜索算法，`--epochs/--seed` 覆盖 TPE 配置）
 - `fetch`：拉取行情（透传 main.py --force_refresh）
 - `filter`：股票池前置筛选（透传 stock_filter.py）
 - `live`：实盘复盘与信号（透传 live_trading.py）
@@ -573,20 +573,27 @@ def to_native(params: dict) -> dict              # numpy标量转Python原生类
 def read_stage_csv(path) -> pd.DataFrame          # stock_code强制str
 ```
 
-### opt_pipeline/param_optimize.py — 自建进程池网格寻优
+### opt_pipeline/param_optimize.py — 参数寻优（grid / tpe 双模式）
 
 ```python
-PARAM_GRID = {strategy_id: {param_name: [values, ...]}}   # 网格定义
+PARAM_GRID = {strategy_id: {param_name: [values, ...]}}   # 网格/搜索空间定义
 
 def main():
     parser.add_argument("--maxcpu", type=int, default=0)  # 0/-1 使用全部 CPU
     parser.add_argument("--stock-list", type=str, default=None)  # 逗号分隔股票代码
     parser.add_argument("--all-stocks", action="store_true")     # 全量标的池（默认回归标的集）
+    parser.add_argument("--mode", choices=["grid", "tpe"], default=None)  # 覆盖 config opt_pipeline.opt_mode
+    parser.add_argument("--epochs", type=int, default=None)  # 覆盖 config opt_pipeline.hyperopt_epochs
+    parser.add_argument("--seed", type=int, default=None)    # 覆盖 config opt_pipeline.hyperopt_seed
     # resolve_target_codes 解析目标集 -> load_regime_map + routed_strategies 按 regime 收窄策略
-    # -> 遍历代码 -> 仅对路由到的策略遍历 PARAM_GRID -> runner.optimize(...)
+    # grid: 遍历 PARAM_GRID 全量 -> runner.optimize(...)
+    # tpe : _tpe_search() 按 epochs 采样同一离散空间（hp.choice 映射）
+    # 两种模式同写 output/param_optimize_result.csv（schema 一致，下游四阶段无感）
     # 过滤 profit_rate > 0 -> 按 GRID_OBJECTIVE_COLUMN（optimize_metric 决定）降序
     # -> write_stage_csv 合并写 output/param_optimize_result.csv
 ```
+
+**TPE 模式（对标 freqtrade hyperopt）**：`_tpe_search()` 用 hyperopt `tpe.suggest` 批量 ask/tell——每批 `hyperopt_batch_size`（默认 64）个候选点经 `BacktestRunner.run_combos` 走既有 chunk 子进程回测（隔离+断点续跑），批间更新 Trials 后验；loss = `-optimize_metric`（非有限值罚 TPE_BAD_LOSS=1e3）；重复采样点经签名校验去重不重复回测；`hyperopt_seed` 固定后同配置同数据结果可复现。适用场景：空间大、粗筛方向；最终定参建议 grid 复核或加大 epochs。
 
 **regime 路由**：若存在 output/stock_filter.csv，标的只寻优其 regime 对应的单一策略（000725=breakout 就只跑 breakout 的 216 组合，不再跑 trend/range）；无报告时跑全部 active 策略。
 
@@ -597,9 +604,11 @@ python opt_pipeline/param_optimize.py --maxcpu 4                          # 4 �
 python opt_pipeline/param_optimize.py --maxcpu 0                          # 自动检测 CPU 数
 python opt_pipeline/param_optimize.py --all-stocks                        # 全量标的池（手动触发）
 python opt_pipeline/param_optimize.py --maxcpu 4 --stock-list 000725,600519  # 仅寻优指定股票
+python opt_pipeline/param_optimize.py --mode tpe --epochs 500             # TPE 采样 500 点（seed 默认取 config）
+python3 skyquant.py opt --mode tpe --epochs 300 --stock-list 000725       # 统一入口（只影响阶段一）
 ```
 
-**输出 CSV 列**：`stock_code, strategy, {各策略参数}, final_capital, profit, profit_rate, sharpe_ratio, max_drawdown, calmar_ratio`（COMBO_METRIC_COLS，schema 变更后需删除旧 CSV 重跑，避免合并写残留旧行）
+**输出 CSV 列**：`stock_code, strategy, {各策略参数}, final_capital, profit, profit_rate, sharpe_ratio, max_drawdown, calmar_ratio`（COMBO_METRIC_COLS，schema 变更后需删除旧 CSV 重跑，避免合并写残留旧行；grid/tpe 两种模式 schema 一致可互换）
 
 **网格参数完整说明**：
 
